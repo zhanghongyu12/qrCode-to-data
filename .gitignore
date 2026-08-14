@@ -47,3 +47,11 @@ htmlcov/
 
 # ExpertDebate
 .session/
+
+# Go build artifacts
+/qrcd
+/qrcd.exe
+/bin/
+*.test
+*.prof
+coverage.out
