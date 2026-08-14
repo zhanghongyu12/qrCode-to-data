@@ -66,8 +66,8 @@
   - 二维码：yeqown/go-qrcode（渲染更强但依赖多）；boombuler/barcode（二维码能力弱）。
   - 摄像头：FFmpeg/GStreamer 子进程（需外部二进制）；go4vl 纯 Go（仅 Linux）。
   - 手机端：原生 App（Flutter/React Native，体验好但分发/开发成本高，与「免装 App」冲突）。
-- 最终选择：采用「决定」栏所列推荐（待人工确认）。
-- 状态：提议
+- 最终选择：采用「决定」栏所列推荐。
+- 状态：已确认
 
 ---
 
