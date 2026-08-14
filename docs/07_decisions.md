@@ -71,6 +71,28 @@
 
 ---
 
+## DEC-003: UI↔API 对齐（CLI 契约以 04_api.md §1 为权威）
+
+- 日期：2026-08-14
+- 决定：二进制名与 CLI 参数契约以 `docs/04_api.md` §1 为准（权威）。对齐 `docs/05_ui.md` §6 假设与 04_api.md 的差异，最终取值如下：
+  - 二进制名：`qrcode` → `qrcd`（Windows 下 `qrcd.exe`）。
+  - 发送渲染模式：`--window` → `--terminal`（string，默认 `ansi`；`window` 为 Phase 2 取值）。
+  - 接收期望参数：`--blocks <int>` / `--size <string>` → `--expect-size <int>`（预期总字节数，可选）。
+  - 接收校验开关：`--no-verify` → `--hash <sha256:hex>`（预期校验值；不提供跳过校验的开关，SHA-256 始终计算）。
+  - 关闭进度：`--no-progress` → `--quiet, -q`（bool，默认 false）。
+- 原因：05_ui.md 在并行期间未见 04_api.md 详细设计，§6 以假设形式给出参数；现 04_api.md 已确认，需将 UI 假设与 API 契约统一，避免 Developer 按歧义参数实现。
+- 影响：
+  - Developer 实现 `cmd/qrcd` 时，参数名、类型与默认值严格以 04_api.md §1 为准（send/receive 两张参数表 + 退出码契约）。
+  - 05_ui.md §3.1/§3.2 usage 块与 §6 假设中的旧参数名（qrcode/--window/--blocks/--size/--no-verify/--no-progress）不具约束力，以本决议与 04_api.md 为准。
+  - 其余未列差异（如 --fps/--version/--ecc/--redundancy 默认值、send 的 --stdin 等）同样以 04_api.md §1 为准；05_ui.md 仅约束交互话术/布局，不约束参数契约。
+- 替代方案：
+  - 以 05_ui.md 假设为准反向修改 04_api.md：不可取，04_api 已确认且为契约权威，其参数命名（--hash/--quiet/--expect-size/--terminal）语义更明确。
+  - 双向各改一部分：增加维护成本且无实质收益，且会造成两端契约持续漂移。
+- 最终选择：以 04_api.md §1 为权威，按上表对齐。
+- 状态：已确认
+
+---
+
 ## 模板示例
 
 ## DEC-000: 示例决策
