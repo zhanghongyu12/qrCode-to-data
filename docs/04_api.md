@@ -178,8 +178,8 @@ type Codec interface {
     // NewEncoder 将源块 data 切为 blockSize 大小的源符号，返回编码器
     NewEncoder(data []byte, blockSize int, redundancy float64) (Encoder, error)
 
-    // NewDecoder 创建解码器，sourceSymbols 为源符号数
-    NewDecoder(sourceSymbols int) Decoder
+    // NewDecoder 创建解码器，sourceSymbols 为源符号数，messageLength 为原始数据长度
+    NewDecoder(sourceSymbols int, messageLength int) Decoder
 }
 
 type Encoder interface {

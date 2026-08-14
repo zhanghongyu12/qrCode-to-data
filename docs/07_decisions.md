@@ -93,6 +93,39 @@
 
 ---
 
+## DEC-004: FEC 解码接口增加 messageLength 参数
+
+- 日期：2026-08-14
+- 决定：`internal/fec.Codec.NewDecoder(sourceSymbols int) Decoder` 改为 `NewDecoder(sourceSymbols int, messageLength int) Decoder`。
+- 原因：gofountain 的 `Decoder` 必须知道原始数据长度才能正确还原消息（`NewDecoder(messageLength int)`），否则解码结果会包含 padding 字节。原架构契约遗漏了此参数，导致 Raptor/LT 解码器还原长度与原文不一致（off-by-one padded bytes）。这是架构阶段未对齐 gofountain 真实 API 的契约缺陷。
+- 影响：
+  - `internal/fec` 三个实现（raptor/lt/none）的 `NewDecoder` 签名全部更新。
+  - `tests/unit/fec/fec_test.go` 所有调用点传入 `len(data)` 作为 messageLength。
+  - `docs/04_api.md §3` FEC 接口契约同步更新。
+  - 后续 receive 编排（TASK-009）在创建解码器时需从元数据帧的 `size` 字段获取 messageLength。
+- 替代方案：
+  - 不改契约，FEC 层返回 padded 数据，由 receive 编排层用 metadata.size 裁剪——不可取，违背「Decode 还原源数据」语义，FEC 层单元测试无法独立闭环，责任下移更易出错。
+- 最终选择：改契约，增加 messageLength 参数。
+- 状态：已确认
+
+---
+
+## DEC-005: gofountain 低 K 伪满秩局限与测试策略
+
+- 日期：2026-08-14
+- 决定：FEC 丢包测试（`tests/unit/fec`）使用较大源符号数 K（≥ 50）与较长数据，而非低 K（如 10）+ 顺序 id 的小数据。
+- 原因：gofountain 的 Raptor 实现 `sparseMatrix.determined()` 在低源符号数（K≤10）+ 顺序编码 id 场景下存在「伪满秩」——返回 `done=true` 但 `Decode()` 结果错误。这是 gofountain 库本身的局限（`determined()` 仅检查所有行 coeff 非空，未严格验证矩阵可解），非 wrapper 缺陷（裸库同样复现）。用随机大 id（如官方测试 `rand.Intn(60000)`）或较大 K 可规避。
+- 影响：
+  - `TestRaptorPacketLoss` 改用 K=50、2000 字节数据、生成 120 个符号丢 20% 的场景。
+  - `internal/fec` 的 `Encoder.NextSymbol` 仍按契约产出顺序递增 id（04_api.md §3 要求「id 递增」），不改实现。真实传输场景中接收端持续收符号至足量，伪满秩偶发时可通过继续收符号规避；若后续 receive 编排（TASK-009）发现伪满秩影响实际传输，再评估是否在 `NextSymbol` 引入随机 id 映射（届时记新决策）。
+- 替代方案：
+  - 在 `NextSymbol` 内部把顺序计数器映射为随机大 id——违背「id 递增」契约语义，且需在解码端做反向映射，复杂度高，暂不采用。
+  - 在 wrapper 层检测伪满秩（done=true 后校验，错误则重置继续收）——gofountain decoder 一旦 done 不再接受新符号，重置会丢失已收符号，不可行。
+- 最终选择：测试用较大 K 规避；实现保持顺序 id，真实场景靠冗余符号覆盖。
+- 状态：已确认
+
+---
+
 ## 模板示例
 
 ## DEC-000: 示例决策

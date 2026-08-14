@@ -7,8 +7,8 @@
 ## 项目状态
 
 - 运行模式：编排模式
-- 当前阶段：阶段 5 - 任务拆分
-- 下一步行动：调度 Architect 创建任务清单 + 记录 UI↔API 对齐（DEC-003）
+- 当前阶段：阶段 6 - 编码
+- 下一步行动：Dev-A（TASK-001/002/003）完成待测试，续派 Dev-B（TASK-004~007）
 - 阻塞项：无
 - 运行模式说明：`独立模式`（角色向用户确认后自提交）或 `编排模式`（角色暂存不提交，经编排者批准后自提交；编排者做集成 merge；push 由编排者申请、用户批准）。编排者激活/退出时翻转本字段。角色启动时读本字段判断提交权。
 - 阻塞项格式说明：无阻塞时填"无"；有阻塞时列出决策编号及简述，如 `DEC-003（待人工确认 API 方案）、DEC-005（待人工确认 UI 与 API 对齐）`。AI 记录阻塞决策到 07_decisions.md 时必须同步更新本字段。
@@ -19,13 +19,22 @@
 
 （暂无）
 
+### 2026-08-14 阶段6 编码启动 - Dev-A
+
+- 调度 Developer（Sonnet）实现 TASK-001/002/003，子代理连续多次因模型 API 故障失败，最终产出 frame/fec 代码骨架。
+- 编排者审查发现 FEC 解码器缺陷：gofountain 的 `Decoder.AddBlocks` 会原地 XOR 修改 block.Data，wrapper 每次 AddSymbol 重建 decoder 重投喂已损坏数据，导致解码错误。修复为复用单一 decoder 增量投喂。
+- 发现 04_api.md §3 的 `NewDecoder(sourceSymbols)` 契约缺 messageLength 参数（gofountain 必须）。记 DEC-004 改契约为 `NewDecoder(sourceSymbols, messageLength)`，同步更新 04_api.md §3 与三个实现。
+- 发现 gofountain 在低 K + 顺序 id 下存在伪满秩局限（done=true 但解码错误）。记 DEC-005，丢包测试改用较大 K（50）+ 较长数据。
+- `go build ./...` 与 `go test ./...` 全绿。TASK-001/002/003 状态→待测试。
+- 提交：本轮代码以 Developer 身份提交（编排者代行，因子代理连续故障无法自提交）。
+
 ---
 
 ## 看板总览
 
 | 待办 | 进行中 | 已完成 | 已阻塞 |
 |------|--------|--------|--------|
-| 13   | 0      | 0      | 0      |
+| 10   | 3      | 0      | 0      |
 
 ---
 
@@ -33,7 +42,7 @@
 
 ## TASK-001: 项目骨架与 Go 模块初始化
 
-- 状态：待办
+- 状态：待测试
 - 优先级：P0
 - 负责角色：Developer
 - 关联需求：PRD F-01；02_architecture §1/§3/§5.2；04_api §1
@@ -48,7 +57,7 @@
 
 ## TASK-002: 二维码帧协议 internal/frame
 
-- 状态：待办
+- 状态：待测试
 - 优先级：P0
 - 负责角色：Developer
 - 关联需求：PRD F-02/F-03/F-06；02_architecture §3/§4.1/§4.2；04_api §2
@@ -63,7 +72,7 @@
 
 ## TASK-003: 喷泉码编解码 internal/fec
 
-- 状态：待办
+- 状态：待测试
 - 优先级：P0
 - 负责角色：Developer
 - 关联需求：PRD F-04；02_architecture §1/§3；04_api §3
