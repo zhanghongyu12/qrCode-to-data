@@ -1,0 +1,12 @@
+# 源代码目录
+#
+# Developer 角色在此目录下实现业务代码。
+# 代码实现必须遵循：
+#   - docs/02_architecture.md 架构设计
+#   - docs/03_database.md 数据库设计
+#   - docs/04_api.md API 设计
+#   - .ai/rules/coding_rules.md 编码规范
+#
+# 开发完成后更新：
+#   - docs/06_tasks.md 任务状态
+#   - docs/CHANGELOG.md 变更日志

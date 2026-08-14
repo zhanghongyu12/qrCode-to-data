@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+venv/
+env/
+__pycache__/
+*.pyc
+
+# Build output
+dist/
+build/
+*.egg-info/
+.next/
+.nuxt/
+out/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Test coverage
+coverage/
+.coverage
+htmlcov/
+
+# Temp files
+*.tmp
+*.bak
+
+# ExpertDebate
+.session/
