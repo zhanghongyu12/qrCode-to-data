@@ -1,7 +1,7 @@
 # 决策记录 (Architecture Decision Records)
 
 > 状态：持续追加
-> 最后更新：2026-07-10
+> 最后更新：2026-08-14
 > 维护者：全员可追加
 
 ## 使用说明
@@ -43,6 +43,31 @@
 - 替代方案：保持 08_review.md 不拆分，通过章节区分——但无法解决两个角色同时修改同一文件的冲突问题
 - 最终选择：拆分为两个独立文件
 - 状态：已确认
+
+---
+
+## DEC-002: 技术栈选型（CLI 工具 + 手机移动网页）
+
+- 日期：2026-08-14
+- 决定：桌面端采用 Go 1.22+ 单二进制 CLI；喷泉码用 gofountain（默认 Raptor 码 RFC 5053，LT 兜底）；二维码生成用 skip2/go-qrcode（EC 级别默认 L）；二维码解析用 makiuchi-d/gozxing；摄像头采集用 gocv（OpenCV，Linux 备选 go4vl，另提供 file/stdin 兜底）；终端渲染用 ANSI 半块字符；CLI 框架用 cobra；同网直传（Phase 2）用 HTTP 临时服务 + 一次性 token；手机端（Phase 2）用移动网页 PWA（原生 JS/TS + IndexedDB + getUserMedia + Canvas）。详见 docs/02_architecture.md §1。
+- 原因：
+  - Go 单二进制 + 交叉编译满足「零配置、无运行时依赖」定位，二维码/FEC 库生态成熟（txqr 同栈可借鉴）。
+  - gofountain 纯 Go 无 CGO，Raptor 冗余开销（约 5~10%）远低于纯 LT（20~30%），吞吐收益明显；RaptorQ 的 Go 实现尚不完整（实验性），不选。
+  - QR 自身纠错降为 L，配合外层喷泉码 + CRC32 + SHA-256 三层兜底，最大化单帧载荷。
+  - 摄像头是唯一破坏「纯单二进制」的环节，用「gocv 跨平台 + go4vl（Linux）+ 文件/stdin 兜底」三层策略缓解。
+  - 手机端选移动网页 PWA 契合「免装 App、浏览器打开即用、可离线」的 PRD 要求，并复用同一帧协议实现能力对称。
+- 影响：
+  - Developer 按此选型搭建模块（见 docs/02_architecture.md §3 包结构）。
+  - 摄像头路径存在 CGO/OpenCV 依赖，MVP 需明确接受该权衡，或在无 OpenCV 环境降级为 file/stdin 解码。
+  - QR version 默认 20（EC L 约 858B/帧），纯光学吞吐约 7~12 KB/s，1MB 文件约 1.5~3 分钟（可调）。
+- 替代方案：
+  - 语言：Python（原型快，但分发需解释器、二维码动画渲染性能与打包差）；Rust（性能好但二维码/FEC 生态与开发成本不占优）。
+  - FEC：RaptorQ（RFC 6330，near-zero 开销约 1~2%，但 Go 生态无完整成熟实现）；纯 LT（最简单但开销大）。
+  - 二维码：yeqown/go-qrcode（渲染更强但依赖多）；boombuler/barcode（二维码能力弱）。
+  - 摄像头：FFmpeg/GStreamer 子进程（需外部二进制）；go4vl 纯 Go（仅 Linux）。
+  - 手机端：原生 App（Flutter/React Native，体验好但分发/开发成本高，与「免装 App」冲突）。
+- 最终选择：采用「决定」栏所列推荐（待人工确认）。
+- 状态：提议
 
 ---
 
