@@ -19,6 +19,10 @@
 - TASK-005 载荷 `internal/payload`：文件/文本/stdin 读取、分块（默认 1024B）、SHA-256/CRC32、`.part`→rename 原子落盘、`--overwrite` 控制、文本摘要名
 - TASK-006 采集 `internal/capture`：帧源抽象接口（camera/file/stdin 可插拔），camera 经 `-tags qrcd_camera` build tag 隔离 gocv（默认构建不依赖 OpenCV）
 - TASK-007 进度 `internal/progress`：统一进度事件接口（百分比/速率/ETA/去重统计）、ANSI 原地刷新、超时监控、`--quiet`
+- TASK-008 发送编排 `internal/send`：payload 分块→SHA-256→FEC 编码→frame 组帧→QR 生成 + ANSI/ASCII 逐帧播放；短文本 ≤200B 走 F-05 直传（静态标准文本二维码）；元数据帧每 20 个数据帧重播一次；自适应分块适配单帧 QR 容量；FPS/版本/ECC/冗余度可控，Ctrl+C 干净停止
+- TASK-009 接收编排 `internal/receive`：帧源取流→qrcode 解码→frame 拆帧（CRC 校验/seq 去重/元数据迟到缓冲初始化会话）→FEC 解码→SHA-256 校验→`.part` 临时文件→rename 原子落盘；`--expect-size`/`--hash` 预校验，失败丢弃损坏数据并提示重传
+- TASK-010 CLI 入口 `cmd/qrcd`：cobra `send`/`receive` 子命令，参数名/默认值与 04_api §1 对齐，flag 统一 Var* 变体绑定 opts；退出码四档（0 成功/1 传输失败/2 参数错误/3 环境错误），错误到 stderr、进度与结果到 stdout，帮助与错误提示中文
+- TASK-011 端到端联调：send→receive 纯光学闭环（file/stdin 兜底，无摄像头环境）逐字节还原一致，SHA-256 与发送端一致；丢帧/乱序/元数据迟到场景经喷泉码兜底可还原；单元测试落位 tests/unit/sendreceive/ 共 11 例
 
 ### Changed
 
