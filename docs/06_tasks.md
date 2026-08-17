@@ -7,8 +7,8 @@
 ## 项目状态
 
 - 运行模式：编排模式
-- 当前阶段：阶段 6 - 编码
-- 下一步行动：TASK-001~011 已编码完成，待进入阶段 7 测试
+- 当前阶段：阶段 7 - 测试
+- 下一步行动：派 Tester 编写 tests/integration + tests/e2e 并跑全量测试，产出 docs/09_test_report.md
 - 阻塞项：无
 - 运行模式说明：`独立模式`（角色向用户确认后自提交）或 `编排模式`（角色暂存不提交，经编排者批准后自提交；编排者做集成 merge；push 由编排者申请、用户批准）。编排者激活/退出时翻转本字段。角色启动时读本字段判断提交权。
 - 阻塞项格式说明：无阻塞时填"无"；有阻塞时列出决策编号及简述，如 `DEC-003（待人工确认 API 方案）、DEC-005（待人工确认 UI 与 API 对齐）`。AI 记录阻塞决策到 07_decisions.md 时必须同步更新本字段。
@@ -37,6 +37,15 @@
 - 删除临时探针 probe_e2e_test.go；正式单元测试落位 tests/unit/sendreceive/（闭环/丢帧/元数据迟到/none 短路/短文本/重播/去重/QR 图片/expect-size/hash 共 11 例）。
 - `unset GOROOT && go build ./...`、`go vet ./...`、`go test ./...` 全绿；CLI 实测：`qrcd send` 缺参输出 usage 退出码 2，`qrcd receive --camera 0`（无 gocv 环境）报环境错误退出码 3。
 - TASK-008/009/010 状态→待测试，TASK-011（纯光学闭环）→已完成；看板更新为 待办2/进行中10/已完成1。代码已 git add 暂存（未 commit），待编排者批准提交。
+
+### 2026-08-17 阶段6 收尾 - 编排者
+
+- 审暂存 diff（`git diff --cached` 全文，非 --stat）：9 文件 1691 插入/46 删除；越界检查通过（路径全在 Developer 权限内：cmd/、internal/send、internal/receive、tests/unit/sendreceive、docs/06_tasks.md、docs/CHANGELOG.md、go.sum），无越界。
+- 独立复跑 `unset GOROOT && go build ./...`、`go vet ./...`、`go test ./...` 全绿（含新增 tests/unit/sendreceive）。复核 flag 绑定（Var* 变体）、--timeout 默认值 30s、退出码四档、FEC 单一 decoder 增量投喂，均正确无回归。
+- 批准 Dev-C 以 Developer 身份提交：commit `e8bdc79`，工作区干净。
+- 阶段 6 编码收尾：TASK-001~011 全部完成（001~010 待测试，011 已完成）。项目单分支开发（master 直提），无 feature 分支需集成 merge，跳过 merge。
+- 以 Coordinator 身份打 `stage-6-handoff` annotated tag 指向 e8bdc79，作为阶段 7 测试基准，满足"编码→测试"软门禁（handoff tag + 代码可编译运行 + 无阻塞项）。
+- 翻项目状态：当前阶段 → 阶段 7 - 测试。下一步派 Tester 子 agent。
 
 ---
 
