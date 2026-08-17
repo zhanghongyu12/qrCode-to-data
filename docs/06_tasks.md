@@ -7,8 +7,8 @@
 ## 项目状态
 
 - 运行模式：编排模式
-- 当前阶段：阶段 7 - 测试
-- 下一步行动：派 Tester 编写 tests/integration + tests/e2e 并跑全量测试，产出 docs/09_test_report.md
+- 当前阶段：阶段 8 - 代码审查
+- 下一步行动：派 Reviewer 审查 src/+tests/，对照 04_api/02_architecture，产出 docs/08_review.md
 - 阻塞项：无
 - 运行模式说明：`独立模式`（角色向用户确认后自提交）或 `编排模式`（角色暂存不提交，经编排者批准后自提交；编排者做集成 merge；push 由编排者申请、用户批准）。编排者激活/退出时翻转本字段。角色启动时读本字段判断提交权。
 - 阻塞项格式说明：无阻塞时填"无"；有阻塞时列出决策编号及简述，如 `DEC-003（待人工确认 API 方案）、DEC-005（待人工确认 UI 与 API 对齐）`。AI 记录阻塞决策到 07_decisions.md 时必须同步更新本字段。
@@ -47,13 +47,23 @@
 - 以 Coordinator 身份打 `stage-6-handoff` annotated tag 指向 e8bdc79，作为阶段 7 测试基准，满足"编码→测试"软门禁（handoff tag + 代码可编译运行 + 无阻塞项）。
 - 翻项目状态：当前阶段 → 阶段 7 - 测试。下一步派 Tester 子 agent。
 
+### 2026-08-17 阶段7 测试 - 编排者（破例代行 Tester）
+
+- subagent 调度通道故障：派 Tester 子 agent（Sonnet/Haiku/fork）连续 3 次返回后端模型 `reasoning_content` / `tool_calls` API 错误（同一模型 id），无法走编排者调度流程。经用户授权，阶段 7 测试由编排者破例亲自下场完成，全程不再调度 subagent。
+- 环境限制：Windows 360 安全软件拦截 `go run`/`go test` 临时 exe（`fork/exec ... Access is denied`）。规避：`GOTMPDIR` 指向项目内 `.tmp/` + `go test -p 1` 顺序执行。诚实告知：并行测试当前不可用，建议将 `.tmp/` 加入 360 信任区（待人工）。
+- 编写 tests/integration/（8 例：Send 文件流/文本超限切流/Receive 完整路径/Overwrite/BlockSize 矩阵/ECC 矩阵/文本+二进制载荷）+ tests/e2e/（10 例：CLI 黑盒退出码 0/1/2/3 + 渲染 + help）。
+- 发现并修复缺陷 T-01：`send.BuildStream` 的 `meta.BlockCount` 存原始 blockCount 而非 boost 后 sourceK（blockCount∈{2,3} 时 K 不匹配致 gofountain panic）。修复 internal/send/stream.go。此修复属 Developer 权限，因 subagent 不可用，编排者代行（授权范围内）。
+- `unset GOROOT && export GOTMPDIR=.../.tmp && go build ./...`、`go vet ./...`、`go test -p 1 ./...` 全绿（9 包含集成/E2E，0 失败）。
+- 撰写 docs/09_test_report.md（已确认状态，被测版本 stage-6-handoff/e8bdc79）。CLI 级 send→receive 真实闭环需摄像头，退化为 CLI 行为验证，端到端字节级闭环由集成测试覆盖，摄像头真实闭环标"待实机验证"。
+- 翻项目状态：当前阶段 → 阶段 8 - 代码审查。TASK-001~010 状态 → 已测试。看板更新为 待办2/进行中0/已完成11。
+
 ---
 
 ## 看板总览
 
 | 待办 | 进行中 | 已完成 | 已阻塞 |
 |------|--------|--------|--------|
-| 2    | 10     | 1      | 0      |
+| 2    | 0      | 11     | 0      |
 
 ---
 
@@ -61,7 +71,7 @@
 
 ## TASK-001: 项目骨架与 Go 模块初始化
 
-- 状态：待测试
+- 状态：已测试
 - 优先级：P0
 - 负责角色：Developer
 - 关联需求：PRD F-01；02_architecture §1/§3/§5.2；04_api §1
@@ -76,7 +86,7 @@
 
 ## TASK-002: 二维码帧协议 internal/frame
 
-- 状态：待测试
+- 状态：已测试
 - 优先级：P0
 - 负责角色：Developer
 - 关联需求：PRD F-02/F-03/F-06；02_architecture §3/§4.1/§4.2；04_api §2
@@ -91,7 +101,7 @@
 
 ## TASK-003: 喷泉码编解码 internal/fec
 
-- 状态：待测试
+- 状态：已测试
 - 优先级：P0
 - 负责角色：Developer
 - 关联需求：PRD F-04；02_architecture §1/§3；04_api §3
@@ -106,7 +116,7 @@
 
 ## TASK-004: 二维码生成与解析 internal/qrcode
 
-- 状态：待测试
+- 状态：已测试
 - 优先级：P0
 - 负责角色：Developer
 - 关联需求：PRD F-02/F-03/F-05；02_architecture §1/§3/§7；04_api §2.5/§2.6
@@ -121,7 +131,7 @@
 
 ## TASK-005: 载荷读写与校验 internal/payload
 
-- 状态：待测试
+- 状态：已测试
 - 优先级：P0
 - 负责角色：Developer
 - 关联需求：PRD F-01/F-05/F-06；02_architecture §3/§4.1/§4.2；04_api §2.3
@@ -136,7 +146,7 @@
 
 ## TASK-006: 摄像头采集 internal/capture
 
-- 状态：待测试
+- 状态：已测试
 - 优先级：P0
 - 负责角色：Developer
 - 关联需求：PRD F-03；02_architecture §1/§3/§5.1；04_api §1.4
@@ -151,7 +161,7 @@
 
 ## TASK-007: 进度与统计 internal/progress
 
-- 状态：待测试
+- 状态：已测试
 - 优先级：P0
 - 负责角色：Developer
 - 关联需求：PRD F-06；02_architecture §3/§5.3；04_api §1.3/§1.4
@@ -166,7 +176,7 @@
 
 ## TASK-008: 发送编排 internal/send
 
-- 状态：待测试
+- 状态：已测试
 - 优先级：P0
 - 负责角色：Developer
 - 关联需求：PRD F-02/F-05；02_architecture §3/§4.1；04_api §1.3
@@ -181,7 +191,7 @@
 
 ## TASK-009: 接收编排 internal/receive
 
-- 状态：待测试
+- 状态：已测试
 - 优先级：P0
 - 负责角色：Developer
 - 关联需求：PRD F-03/F-05/F-06；02_architecture §3/§4.2；04_api §1.4
@@ -196,7 +206,7 @@
 
 ## TASK-010: CLI 入口与参数契约 cmd/qrcd
 
-- 状态：待测试
+- 状态：已测试
 - 优先级：P0
 - 负责角色：Developer
 - 关联需求：PRD F-01；02_architecture §3/§5.1；04_api §1

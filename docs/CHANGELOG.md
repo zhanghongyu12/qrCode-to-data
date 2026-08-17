@@ -23,6 +23,7 @@
 - TASK-009 接收编排 `internal/receive`：帧源取流→qrcode 解码→frame 拆帧（CRC 校验/seq 去重/元数据迟到缓冲初始化会话）→FEC 解码→SHA-256 校验→`.part` 临时文件→rename 原子落盘；`--expect-size`/`--hash` 预校验，失败丢弃损坏数据并提示重传
 - TASK-010 CLI 入口 `cmd/qrcd`：cobra `send`/`receive` 子命令，参数名/默认值与 04_api §1 对齐，flag 统一 Var* 变体绑定 opts；退出码四档（0 成功/1 传输失败/2 参数错误/3 环境错误），错误到 stderr、进度与结果到 stdout，帮助与错误提示中文
 - TASK-011 端到端联调：send→receive 纯光学闭环（file/stdin 兜底，无摄像头环境）逐字节还原一致，SHA-256 与发送端一致；丢帧/乱序/元数据迟到场景经喷泉码兜底可还原；单元测试落位 tests/unit/sendreceive/ 共 11 例
+- 阶段7测试：tests/integration/（8 例，完整 Send/Receive API 闭环 + BlockSize/ECC 矩阵 + Overwrite 控制 + 文本/二进制载荷）、tests/e2e/（10 例，CLI 黑盒退出码 0/1/2/3 + QR 渲染 + help）、docs/09_test_report.md（被测版本 stage-6-handoff/e8bdc79）
 
 ### Changed
 
@@ -35,6 +36,8 @@
 ### Removed
 
 ### Fixed
+
+- T-01：`send.BuildStream` 元数据 `BlockCount` 改存 boost 后的实际 sourceK（原存原始 blockCount，当 blockCount∈{2,3} 被提升至 K=4 时不匹配，致接收端 `ensureDecoder` 用错误 K 重建解码器，gofountain raptor 解码 panic）
 
 ### Security
 
