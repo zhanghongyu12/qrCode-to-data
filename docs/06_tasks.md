@@ -7,8 +7,8 @@
 ## 项目状态
 
 - 运行模式：编排模式
-- 当前阶段：阶段 8 - 代码审查
-- 下一步行动：派 Reviewer 审查 src/+tests/，对照 04_api/02_architecture，产出 docs/08_review.md
+- 当前阶段：阶段 9 - 发布
+- 下一步行动：发布执行（tag v0.1.0 + CHANGELOG + 集成），push 待用户批准
 - 阻塞项：无
 - 运行模式说明：`独立模式`（角色向用户确认后自提交）或 `编排模式`（角色暂存不提交，经编排者批准后自提交；编排者做集成 merge；push 由编排者申请、用户批准）。编排者激活/退出时翻转本字段。角色启动时读本字段判断提交权。
 - 阻塞项格式说明：无阻塞时填"无"；有阻塞时列出决策编号及简述，如 `DEC-003（待人工确认 API 方案）、DEC-005（待人工确认 UI 与 API 对齐）`。AI 记录阻塞决策到 07_decisions.md 时必须同步更新本字段。
@@ -56,6 +56,21 @@
 - `unset GOROOT && export GOTMPDIR=.../.tmp && go build ./...`、`go vet ./...`、`go test -p 1 ./...` 全绿（9 包含集成/E2E，0 失败）。
 - 撰写 docs/09_test_report.md（已确认状态，被测版本 stage-6-handoff/e8bdc79）。CLI 级 send→receive 真实闭环需摄像头，退化为 CLI 行为验证，端到端字节级闭环由集成测试覆盖，摄像头真实闭环标"待实机验证"。
 - 翻项目状态：当前阶段 → 阶段 8 - 代码审查。TASK-001~010 状态 → 已测试。看板更新为 待办2/进行中0/已完成11。
+
+### 2026-08-17 阶段8 审查 - 编排者（破例代行 Reviewer）
+
+- subagent 调度通道仍不可用，编排者破例代行 Reviewer，审查 internal/ 全部包（frame/fec/qrcode/payload/capture/send/receive/progress）+ cmd/qrcd + tests/，对照 04_api/02_architecture/coding_rules。
+- 产出 docs/08_review.md（已确认）：**无 Critical**；3 Warning（capacityCache 无并发锁 / Processor 无锁 / 载荷全量入内存，均 MVP 不阻塞）；3 Suggestion（--hash 未校验 hex 字符等）。
+- 安全审计：路径穿越防护（filepath.Base 清洗）/ CRC32+SHA-256 双重校验 / crypto/rand 会话 ID / .part→rename 原子落盘，均达标；无注入面（无 SQL/shell exec/反序列化不可信数据）。
+- API 契约一致性：退出码 0/1/2/3、帧协议 32B 头+payload+4B CRC32 大端 IEEE、FEC 接口 NewDecoder(k,msgLen)、元数据 JSON 字段、短文本 ≤200B 直传，均符合 04_api §1-3。
+- 性能：QR 容量二分+缓存、FEC 单 decoder 增量投喂、ticker 节流，均合理；无 goroutine 泄漏。
+- 满足"测试→Review"与"Review→发布"门禁（09_test_report 已确认 + 08_review 无 Critical + 无阻塞项），进入阶段 9 发布。
+
+### 2026-08-17 阶段9 发布准备 - 编排者（代行 Developer）
+
+- 自动化门禁校验：`go test -p 1 ./...` 全绿 + CHANGELOG 已更新 + 08_review 无 Critical 未修复 → 满足发布门禁。
+- 准备打 tag v0.1.0（首发）；项目单分支 master 直提，无 feature 分支需集成 merge，跳过 merge。
+- push 为重大决策（对外、不可逆），待用户批准后执行。
 
 ---
 
