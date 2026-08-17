@@ -178,7 +178,7 @@ func BuildStream(load *payload.Load, opts Options) (*Stream, error) {
 		Name:        load.Name,
 		Size:        int64(len(load.Data)),
 		BlockSize:   blockSize,
-		BlockCount:  blockCount,
+		BlockCount:  sourceK,
 		HashAlgo:    "sha256",
 		Hash:        payload.SHA256Hex(load.Data),
 		FEC:         scheme,
