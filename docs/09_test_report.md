@@ -3,7 +3,9 @@
 > 状态：已确认
 > 最后更新：2026-08-17
 > 维护者：Tester
-> 被测版本：tag `stage-6-handoff` / commit `e8bdc79`（阶段 6 编码产出）
+> 被测版本：tag `v0.1.0`（首发 MVP）；阶段 6 编码产出基线 `stage-6-handoff` / `e8bdc79`
+
+> **订正（2026-08-17）**：初版报告记录「全绿」系特定运行偶然命中——gozxing 在缺 `PURE_BARCODE` 提示时对较大尺寸纯二维码存在 ~8% 随机误检（见 T-02/DEC-006），跨运行随机失败。阶段 9 发布门禁复跑暴露该随机失败，定位并修复（`decode.go` 启用 `PURE_BARCODE`）后多轮复跑方稳定全绿。下文统计为修复后结果。
 
 ## 1. 测试范围
 
@@ -45,6 +47,8 @@
 
 **总计：全绿（`go test -p 1 ./...` exit 0），0 失败。**
 
+> 修复 T-02 后多轮复跑（集成/E2E 各 4+ 轮 `-count=1` 顺序执行）稳定全绿。已知环境问题：360 安全软件偶发锁定并行编译的测试 `.exe`（报「process cannot access the file」），用 `GOTMPDIR` 项目临时目录 + `go test -p 1` 顺序执行规避（见 §6）；该锁定为 0.001s 构建期失败，非测试失败。
+
 ## 4. 验收项核对
 
 | 验收点（TASK-011/04_api §1.2） | 结果 |
@@ -60,6 +64,11 @@
 **缺陷 T-01（已修复）**：`send.BuildStream` 将元数据 `meta.BlockCount` 设为原始分块数 `blockCount`，但当 `blockCount∈{2,3}` 时 FEC 源符号数被提升至 `sourceK=4`（Raptor 要求 K≥4）。接收端 `processor.ensureDecoder` 用 `meta.BlockCount` 重建解码器，K 不匹配（meta=2 实际=4），导致 `msgLen`/`symLen` 计算错误，gofountain raptor 解码 panic（`slice bounds out of range`）。
 - 修复：`internal/send/stream.go` 将 `meta.BlockCount` 改为 boost 后的实际 `sourceK`。
 - 回归验证：集成 `TestTextAndBinaryPayload/text`（960B 文本，K=2→4）现通过。
+
+**缺陷 T-02（已修复）**：`qrcode.DecodeImageBytes` 缺 gozxing `PURE_BARCODE` 提示，HybridBinarizer 对 ≥~315px 纯二维码误估模块数（`NotFoundException: dimension = 75`），丢约 8% 的帧；每帧帧头含 crypto 随机 `transfer_id` → 跨运行随机失败，报「符号不足」。
+- 定位：逐层诊断（渲染对照 skip2 原生一致、像素尺寸矩阵 scale≤2 可解/≥3 误检、PURE_BARCODE 对照 scale 3/8/16 全解），确认 gozxing 解码侧局限，排除 FEC/帧协议/渲染。详见 DEC-006。
+- 修复：`internal/qrcode/decode.go` 提示集新增 `DecodeHintType_PURE_BARCODE`。
+- 回归验证：集成 `TestReceiveFromFileSource`/`TestTextAndBinaryPayload` 多轮 `-count=1` 复跑全绿。
 
 > 此修复属 Developer 权限范围（internal/）。因 subagent 调度通道故障（见 §6），经用户授权由编排者代行 Developer 修复，将在阶段 8 提交中一并记录。
 

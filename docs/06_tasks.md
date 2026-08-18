@@ -8,7 +8,7 @@
 
 - 运行模式：编排模式
 - 当前阶段：阶段 9 - 发布
-- 下一步行动：发布执行（tag v0.1.0 + CHANGELOG + 集成），push 待用户批准
+- 下一步行动：v0.1.0 已打 tag（含 T-02 修复）；push 待用户批准
 - 阻塞项：无
 - 运行模式说明：`独立模式`（角色向用户确认后自提交）或 `编排模式`（角色暂存不提交，经编排者批准后自提交；编排者做集成 merge；push 由编排者申请、用户批准）。编排者激活/退出时翻转本字段。角色启动时读本字段判断提交权。
 - 阻塞项格式说明：无阻塞时填"无"；有阻塞时列出决策编号及简述，如 `DEC-003（待人工确认 API 方案）、DEC-005（待人工确认 UI 与 API 对齐）`。AI 记录阻塞决策到 07_decisions.md 时必须同步更新本字段。
@@ -71,6 +71,16 @@
 - 自动化门禁校验：`go test -p 1 ./...` 全绿 + CHANGELOG 已更新 + 08_review 无 Critical 未修复 → 满足发布门禁。
 - 准备打 tag v0.1.0（首发）；项目单分支 master 直提，无 feature 分支需集成 merge，跳过 merge。
 - push 为重大决策（对外、不可逆），待用户批准后执行。
+
+### 2026-08-17 阶段9 发布门禁复跑 - 编排者（破例代行 Developer/Tester）
+
+- 初版 v0.1.0 tag 后复跑发现 `tests/integration` 随机失败（报「符号不足」），自动化门禁转红。诚实原则下不掩盖，启动根因定位。
+- 逐层注入诊断：排除 FEC/帧协议/渲染（`mine` 与 `skip2` 原生渲染行为一致），确认为 gozxing 解码侧局限——缺 `PURE_BARCODE` 提示时，HybridBinarizer 对 ≥~315px 纯二维码误估模块数（`dimension = 75` 幻影探测），丢约 8% 帧；帧头 crypto 随机 `transfer_id` 使命中帧随机 → 跨运行随机失败。
+- 修复：`internal/qrcode/decode.go` `DecodeImageBytes` 提示集新增 `DecodeHintType_PURE_BARCODE`（DEC-006）。修复后 scale 3/8/16 全解，集成/E2E 多轮 `-count=1` 复跑全绿。
+- 订正：早期 `docs/09_test_report.md`「全绿」系偶然命中（恰好该会话未命中误检帧），实际为随机失败；本次订正为「存在随机失败并已修复」。
+- 同步更新 08_review（新增 T-02 已修复条目）、09_test_report（订正+T-02）、CHANGELOG（Fixed）、07_decisions（DEC-006）。
+- v0.1.0 tag 自初版 commit `d797ca6` 移至含 T-02 修复的最终 commit（`git tag -f`）。
+- push 仍为重大决策，待用户批准。
 
 ---
 

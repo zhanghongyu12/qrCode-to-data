@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- T-02（DEC-006）：`qrcode.DecodeImageBytes` 启用 gozxing `PURE_BARCODE` 提示，修复纯二维码大尺寸（≥~315px）下 HybridBinarizer 误估模块数导致约 8% 随机丢帧（报「符号不足」）。此前跨运行随机失败，修复后集成/E2E 多轮复跑全绿。
+
 ### Added
 
 - 初始化项目模板结构

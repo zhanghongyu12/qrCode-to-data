@@ -126,6 +126,26 @@
 
 ---
 
+## DEC-006: gozxing PURE_BARCODE 提示修复纯二维码大尺寸误检
+
+- 日期：2026-08-17
+- 决定：`qrcode.DecodeImageBytes` 的 gozxing 解码提示集新增 `DecodeHintType_PURE_BARCODE`（保留既有 `CHARACTER_SET=ISO-8859-1`、`TRY_HARDER`）。
+- 原因：阶段 9 发布门禁复跑发现 `tests/integration`（`TestReceiveFromFileSource`、`TestTextAndBinaryPayload/binary`）随机失败，报「符号不足」。逐层注入诊断复现，确认根因不在 FEC/帧协议/渲染：
+  - gozxing 的 HybridBinarizer 在**不含 PURE_BARCODE 提示**时，对**较大尺寸（≥~315px）的纯二维码**会误估模块数（抛 `NotFoundException: dimension = 75` 等幻影探测），丢弃约 8% 的帧。
+  - 误检**内容相关**：每帧帧头携带 crypto 随机 `transfer_id`，不同传输会话产生不同模块图案 → 命中误检的帧随机 → 跨运行随机失败。
+  - 像素尺寸矩阵：scale 1/2（≤210px）可解，scale≥3（≥315px）误检；`mine` 与 `skip2` 原生渲染行为一致 → 非本项目渲染缺陷，为 gozxing 解码侧局限。
+  - 加入 `PURE_BARCODE` 后 scale 3/8/16 全部稳定可解；多轮复跑（集成/E2E 各 4+ 轮）全绿。
+- 影响：`internal/qrcode/decode.go`（`DecodeImageBytes` 提示集 + 解释性注释）。`render.go` 不变。FEC/帧协议不变。本工具传输模型为「整帧即单枚二维码」，PURE_BARCODE 语义成立。
+- 替代方案：
+  - 测试夹具改用小渲染尺寸（scale≤2）：仅掩盖问题，不改善真实摄像头路径（实机采集为大图），不采用。
+  - 二进制帧 Base64 包裹再入码：诊断证明误检在图像检测层而非字节层，同帧仍误检，不采用。
+  - 切换/分叉 skip2 或 gozxing：成本高，超出 MVP 范围，不采用。
+- 关联：DEC-005（gofountain 低 K 伪满秩，独立问题，本次未触发）；早期 `docs/09_test_report.md` 记录「全绿」系特定运行偶然命中，实际为随机失败，本次订正。
+- 最终选择：`DecodeImageBytes` 启用 `PURE_BARCODE`。
+- 状态：已确认
+
+---
+
 ## 模板示例
 
 ## DEC-000: 示例决策

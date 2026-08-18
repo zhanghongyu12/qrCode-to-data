@@ -25,6 +25,15 @@
 ### 严重 (Critical)
 无。
 
+### 缺陷修复（阶段 9 发布门禁复跑发现，已修复）
+
+**T-02（已修复）：gozxing 纯二维码大尺寸误检导致随机丢帧**
+- 位置：`internal/qrcode/decode.go` `DecodeImageBytes`
+- 问题：缺 `PURE_BARCODE` 提示时，gozxing HybridBinarizer 对 ≥~315px 的纯二维码误估模块数（`NotFoundException: dimension = 75`），丢弃约 8% 的帧；每帧帧头含 crypto 随机 `transfer_id` → 命中帧随机 → `tests/integration` 跨运行随机失败（报「符号不足」）。
+- 根因定位：逐层注入诊断（渲染对照 skip2 原生、像素尺寸矩阵、PURE_BARCODE 对照），排除 FEC/帧协议/渲染，确认为 gozxing 解码侧局限。
+- 修复：提示集新增 `DecodeHintType_PURE_BARCODE`（DEC-006）。修复后 scale 3/8/16 全解，集成/E2E 多轮复跑全绿。
+- 订正：早期 `docs/09_test_report.md` 记录「全绿」系特定运行偶然命中（恰好该会话未命中误检帧），实际为随机失败；本次订正为「存在随机失败并已修复」。
+
 ### 警告 (Warning)
 
 **W-01：`qrcodeMaxCapacity` 包级 `capacityCache` map 无并发保护**
