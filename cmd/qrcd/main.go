@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"qrcd/internal/qrcode"
 	"qrcd/internal/receive"
 	"qrcd/internal/send"
+	"qrcd/internal/web"
 )
 
 // exitErr 携带退出码的错误（0 成功/1 传输失败/2 参数错误/3 环境错误）。
@@ -53,6 +55,31 @@ func init() {
 	})
 	rootCmd.AddCommand(sendCmd())
 	rootCmd.AddCommand(receiveCmd())
+	rootCmd.AddCommand(webCmd())
+}
+
+func webCmd() *cobra.Command {
+	var addr string
+	cmd := &cobra.Command{
+		Use:   "web",
+		Short: "启动三端 Web 产物（发送端/手机中继/接收端）",
+		Long: `启动一个本地 Web 服务，浏览器打开即得三个产物：
+  /sender   发送端：本机选文件，屏幕逐帧播放二维码
+  /relay    手机中继：扫码存下，切换重放给接收端
+  /receiver 接收端：扫码探测与计数
+
+手机与电脑需在同一局域网；手机访问 http://<电脑IP>:<端口>/relay`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			srv := web.NewServer(addr)
+			if err := srv.Start(ctx); err != nil && err != http.ErrServerClosed {
+				return &exitErr{code: 3, err: err}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&addr, "addr", "a", ":8080", "监听地址（如 :8080）")
+	return cmd
 }
 
 func sendCmd() *cobra.Command {
