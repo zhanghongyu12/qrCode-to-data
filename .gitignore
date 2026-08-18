@@ -56,3 +56,8 @@ htmlcov/
 *.prof
 coverage.out
 /.tmp/
+
+# 运行时生成的自签证书与接收文件目录
+/qrcd-cert.pem
+/qrcd-key.pem
+/downloads/

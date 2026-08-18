@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"image/png"
 	"io"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -48,6 +50,19 @@ func NewServer(addr string) *Server {
 	return &Server{addr: addr}
 }
 
+// tlsPort 把 HTTP 监听地址映射到 HTTPS 端口（":8080" → ":8443"，偏移 +363）。
+func tlsPort(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ":8443"
+	}
+	n, _ := strconv.Atoi(port)
+	if n <= 0 {
+		n = 8080
+	}
+	return net.JoinHostPort(host, strconv.Itoa(n+363))
+}
+
 // Start 启动 HTTP 服务（阻塞）。
 func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
@@ -63,6 +78,15 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/recv/file", s.handleRecvFile)
 
 	s.srv = &http.Server{Addr: s.addr, Handler: mux}
+
+	// HTTPS 端口（手机中继需要安全上下文才能开摄像头）：同 addr 基础上 +363
+	// （:8080 → :8443），与 HTTP 共享同一 mux/state。
+	httpsAddr := tlsPort(s.addr)
+	if err := ensureCertFiles(); err != nil {
+		fmt.Printf("  ⚠ 生成自签证书失败（手机中继将无法开摄像头）: %v\n", err)
+		httpsAddr = ""
+	}
+
 	go func() {
 		if ctx == nil {
 			return
@@ -70,11 +94,24 @@ func (s *Server) Start(ctx context.Context) error {
 		<-ctx.Done()
 		s.srv.Shutdown(context.Background())
 	}()
+
+	// HTTPS 在后台 goroutine 起给手机用（安全上下文才能开摄像头）；HTTP 阻塞当前 goroutine。
+	if httpsAddr != "" {
+		httpsSrv := &http.Server{Addr: httpsAddr, Handler: mux}
+		go func() {
+			if err := httpsSrv.ListenAndServeTLS(certFile, keyFile); err != nil && err != http.ErrServerClosed {
+				fmt.Printf("  ⚠ HTTPS(%s) 启动失败: %v\n", httpsAddr, err)
+			}
+		}()
+	}
+
 	fmt.Printf("\nqrcd Web 三端已启动:\n")
 	fmt.Printf("  发送端(本机选文件→播放 QR): http://localhost%s/sender\n", s.addr)
-	fmt.Printf("  手机中继(扫 QR→网络转发):   http://localhost%s/relay\n", s.addr)
 	fmt.Printf("  接收端(等手机上传→还原):    http://localhost%s/receiver\n", s.addr)
-	fmt.Println("  手机与电脑需同网；手机访问 http://<本机IP>" + s.addr + "/relay")
+	if httpsAddr != "" {
+		fmt.Printf("  手机中继(扫码→转发,需HTTPS): https://<本机IP>%s/relay\n", httpsAddr)
+		fmt.Println("  手机首次访问会提示证书不安全，点「高级/继续访问」即可开摄像头。")
+	}
 	return s.srv.ListenAndServe()
 }
 
