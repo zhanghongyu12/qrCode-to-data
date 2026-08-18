@@ -39,9 +39,16 @@ func DecodeImage(img image.Image) (string, error) {
 // 通过 CHARACTER_SET=ISO-8859-1 使 byte 模式 1:1 还原，适用于二进制帧载荷。
 // 解码得到的文本 rune 范围 0~255，再经 ISO-8859-1 编码器还原为原始字节，
 // 避免 Go 字符串 UTF-8 存储导致的高字节失真。
+//
+// PURE_BARCODE 提示告诉 gozxing 图像为纯二维码（无背景/非码内容）。
+// 缺少该提示时，gozxing 的 HybridBinarizer 在较大尺寸（≥~315px）的纯二维码
+// 上会误估模块数（dimension=75 等幻影探测），抛 NotFoundException 丢弃约 8% 的帧
+// （内容与尺寸相关，随传输 ID 变化呈随机失败）。PURE_BARCODE 使检测器在任意尺寸
+// 下稳定还原，对本工具「整帧即二维码」的传输模型成立。见 DEC-006。
 func DecodeImageBytes(img image.Image) ([]byte, error) {
 	hints := map[gozxing.DecodeHintType]interface{}{
 		gozxing.DecodeHintType_CHARACTER_SET: charmap.ISO8859_1,
+		gozxing.DecodeHintType_PURE_BARCODE:  struct{}{},
 		gozxing.DecodeHintType_TRY_HARDER:    struct{}{},
 	}
 	res, err := decode(img, hints)
