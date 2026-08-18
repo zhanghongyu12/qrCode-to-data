@@ -2,17 +2,18 @@ package web
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image/png"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 
 	"qrcd/internal/payload"
 	"qrcd/internal/qrcode"
+	"qrcd/internal/receive"
 	"qrcd/internal/send"
 )
 
@@ -22,12 +23,24 @@ type session struct {
 	current int
 }
 
+// recvSession 网络接收会话：手机中继把扫到的 QR 帧字节 POST 到 /api/ingest。
+type recvSession struct {
+	proc  *receive.Processor
+	done  bool
+	res   *receive.Result
+	count int
+	total int
+}
+
 // Server 提供 send/receive 三端 Web 产物。
 type Server struct {
 	mu   sync.Mutex
 	sess *session
 	addr string
 	srv  *http.Server
+
+	rmu  sync.Mutex
+	recv *recvSession
 }
 
 // NewServer 创建 Web 服务（addr 形如 ":8080"）。
@@ -45,16 +58,22 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/encode", s.handleEncode)
 	mux.HandleFunc("/api/frame/", s.handleFrame)
 	mux.HandleFunc("/api/status", s.handleStatus)
+	mux.HandleFunc("/api/ingest", s.handleIngest)
+	mux.HandleFunc("/api/recv/status", s.handleRecvStatus)
+	mux.HandleFunc("/api/recv/file", s.handleRecvFile)
 
 	s.srv = &http.Server{Addr: s.addr, Handler: mux}
 	go func() {
+		if ctx == nil {
+			return
+		}
 		<-ctx.Done()
 		s.srv.Shutdown(context.Background())
 	}()
 	fmt.Printf("\nqrcd Web 三端已启动:\n")
 	fmt.Printf("  发送端(本机选文件→播放 QR): http://localhost%s/sender\n", s.addr)
-	fmt.Printf("  手机中继(扫 QR→重放):       http://localhost%s/relay\n", s.addr)
-	fmt.Printf("  接收端(扫 QR→还原文件):     http://localhost%s/receiver\n", s.addr)
+	fmt.Printf("  手机中继(扫 QR→网络转发):   http://localhost%s/relay\n", s.addr)
+	fmt.Printf("  接收端(等手机上传→还原):    http://localhost%s/receiver\n", s.addr)
 	fmt.Println("  手机与电脑需同网；手机访问 http://<本机IP>" + s.addr + "/relay")
 	return s.srv.ListenAndServe()
 }
@@ -173,11 +192,88 @@ func (s *Server) handleReceiver(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, receiverPage)
 }
 
-// 供中继页 JS 上传扫到的帧字节（base64），仅用于诊断/调试，重放走手机本地 canvas。
-func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Frames []string `json:"frames"` }
-	json.NewDecoder(r.Body).Decode(&req)
+// handleIngest 接收中继手机 POST 上来的单帧原始字节（= QR 解码出的 QRCD 帧字节），
+// 喂给 receive.Processor 重组；收齐后落盘到 downloads/ 目录。
+func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	if r.Method == http.MethodOptions {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", 405)
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil || len(body) == 0 {
+		http.Error(w, "空帧", 400)
+		return
+	}
+
+	s.rmu.Lock()
+	rs := s.recv
+	if rs == nil || rs.done {
+		os.MkdirAll("downloads", 0o755)
+		proc, _ := receive.NewProcessor(receive.Options{Output: "downloads/", Overwrite: true})
+		rs = &recvSession{proc: proc}
+		s.recv = rs
+	}
+	s.rmu.Unlock()
+
+	err = rs.proc.Process(body)
+	count, total, _ := rs.proc.Stats()
+	rs.count = count
+	rs.total = total
+	if rs.proc.Done() {
+		if res, _ := rs.proc.Result(); res != nil {
+			rs.res = res
+			rs.done = true
+		}
+	}
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error(), "count": count, "total": total, "done": rs.done})
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"received":%d}`, len(req.Frames))
-	_ = base64.StdEncoding
+	json.NewEncoder(w).Encode(map[string]any{"ok": true, "count": count, "total": total, "done": rs.done})
+}
+
+// handleRecvStatus 网络接收进度。
+func (s *Server) handleRecvStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	s.rmu.Lock()
+	rs := s.recv
+	s.rmu.Unlock()
+	if rs == nil {
+		json.NewEncoder(w).Encode(map[string]any{"ready": false})
+		return
+	}
+	resp := map[string]any{
+		"ready": true,
+		"count": rs.count,
+		"total": rs.total,
+		"done":  rs.done,
+	}
+	if rs.done && rs.res != nil {
+		resp["name"] = rs.res.Name
+		resp["size"] = rs.res.Size
+		resp["sha256"] = rs.res.SHA256
+		resp["path"] = rs.res.OutputPath
+	}
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handleRecvFile 下载已还原的文件。
+func (s *Server) handleRecvFile(w http.ResponseWriter, r *http.Request) {
+	s.rmu.Lock()
+	rs := s.recv
+	s.rmu.Unlock()
+	if rs == nil || !rs.done || rs.res == nil {
+		http.Error(w, "文件未就绪", 404)
+		return
+	}
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+rs.res.Name+"\"")
+	http.ServeFile(w, r, rs.res.OutputPath)
 }
