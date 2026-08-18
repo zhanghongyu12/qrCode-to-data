@@ -27,7 +27,7 @@
 
 ```
 docs/00_idea.md   ← 产品想法记录
-README.md
+docs/AI_WORK_MODEL.md
 ```
 
 ---
@@ -60,7 +60,7 @@ docs/00_idea.md    ← 完善/更新想法记录
 
 0. 确认 git author 已设置为本角色身份（见 `.ai/rules/git_rules.md`「提交身份」）
 
-1. 阅读 docs/00_idea.md 和 README.md
+1. 阅读 docs/00_idea.md 和 docs/AI_WORK_MODEL.md
 2. 分析想法，明确目标用户和核心价值
 3. 列出核心功能列表，区分 MVP 和 Phase 2
 4. 定义用户场景和用户旅程

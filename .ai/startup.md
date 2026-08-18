@@ -59,7 +59,7 @@
  
  - 角色文件: `.ai/roles/pm.md`
  - 规则: `.ai/rules/git_rules.md`、`.ai/rules/document_rules.md`
- - 输入: `docs/00_idea.md`、`README.md`
+ - 输入: `docs/00_idea.md`、`docs/AI_WORK_MODEL.md`
  - 输出: `docs/01_prd.md`、`docs/00_idea.md`
  - 权限: `docs/00_idea.md`、`docs/01_prd.md`、`docs/06_tasks.md`（项目状态区块）
  
@@ -67,7 +67,7 @@
  
  - 角色文件: `.ai/roles/architect.md`
  - 规则: `.ai/rules/git_rules.md`、`.ai/rules/document_rules.md`
- - 输入: `docs/01_prd.md`、`README.md`
+ - 输入: `docs/01_prd.md`、`docs/AI_WORK_MODEL.md`
  - 输出: `docs/02_architecture.md`、`docs/03_database.md`、`docs/04_api.md`
  - 权限: `docs/02_architecture.md`、`docs/03_database.md`、`docs/04_api.md`、`docs/06_tasks.md`（项目状态区块）
  
@@ -75,7 +75,7 @@
  
  - 角色文件: `.ai/roles/designer.md`
  - 规则: `.ai/rules/git_rules.md`、`.ai/rules/document_rules.md`
- - 输入: `docs/01_prd.md`、`README.md`
+ - 输入: `docs/01_prd.md`、`docs/AI_WORK_MODEL.md`
  - 输出: `docs/05_ui.md`
  - 权限: `docs/05_ui.md`、`docs/06_tasks.md`（项目状态区块）
  

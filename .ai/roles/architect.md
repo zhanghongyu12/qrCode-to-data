@@ -28,7 +28,7 @@
 
 ```
 docs/01_prd.md      ← 产品需求文档
-README.md
+docs/AI_WORK_MODEL.md
 ```
 
 ---
