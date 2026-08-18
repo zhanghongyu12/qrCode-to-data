@@ -146,7 +146,7 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "image/png")
-	png.Encode(w, code.Image(6))
+	png.Encode(w, code.Image(4))
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {

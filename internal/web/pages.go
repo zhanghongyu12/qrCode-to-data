@@ -25,7 +25,7 @@ const senderPage = `<!doctype html>
 <title>qrcd 发送端</title>
 <style>body{font-family:system-ui,sans-serif;text-align:center;margin:0;padding:20px;background:#111;color:#eee}
 h1{font-size:20px} #drop{border:2px dashed #6a6;border-radius:12px;padding:40px;margin:20px auto;max-width:480px;cursor:pointer}
-#drop.hover{background:#1a3a1a} #qr{margin:20px auto;max-width:90vw;image-rendering:pixelated;background:#fff}
+#drop.hover{background:#1a3a1a} #qr{margin:20px auto;width:min(70vmin,460px);height:auto;image-rendering:pixelated;background:#fff}
 .bar{background:#333;height:8px;border-radius:4px;margin:12px auto;max-width:400px}
 .bar>i{display:block;height:100%;width:0;background:#5d9;border-radius:4px}
 input[type=range]{width:240px} button{font-size:16px;padding:10px 24px;border:none;border-radius:8px;background:#2a7;color:#fff;cursor:pointer;margin:6px}
@@ -66,7 +66,8 @@ function play(){
   if(!playing)return;
   if(i>=frames){$('info').textContent='发送完成 ✓（循环重放中）';i=0}
   const img=new Image();
-  img.onload=()=>{const c=$('qr');const sc=8;c.width=img.width*sc;c.height=img.height*sc;
+  img.onload=()=>{const c=$('qr');const tgt=Math.min(window.innerWidth,window.innerHeight)*0.7;
+    const sc=Math.max(1,Math.floor(tgt/img.width));c.width=img.width*sc;c.height=img.height*sc;
     const x=c.getContext('2d');x.imageSmoothingEnabled=false;x.drawImage(img,0,0,c.width,c.height);
     $('prog').style.width=(100*i/frames)+'%'};
   img.src='/api/frame/'+i;i++;
