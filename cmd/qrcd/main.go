@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -46,6 +48,33 @@ var rootCmd = &cobra.Command{
 Phase 2 将支持同网直传加速与手机离线中转。`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// 不带子命令（如双击运行）：自动起 Web 三端并打开浏览器。
+		addr, _ := cmd.Flags().GetString("addr")
+		if addr == "" {
+			addr = ":8080"
+		}
+		url := "http://localhost" + addr + "/"
+		go openBrowser(url)
+		srv := web.NewServer(addr)
+		if err := srv.Start(cmd.Context()); err != nil && err != http.ErrServerClosed {
+			return &exitErr{code: 3, err: err}
+		}
+		return nil
+	},
+}
+
+// openBrowser 跨平台打开默认浏览器。
+func openBrowser(url string) {
+	time.Sleep(400 * time.Millisecond) // 等服务起来
+	switch runtime.GOOS {
+	case "windows":
+		exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+	case "darwin":
+		exec.Command("open", url).Start()
+	default:
+		exec.Command("xdg-open", url).Start()
+	}
 }
 
 func init() {
@@ -56,6 +85,7 @@ func init() {
 	rootCmd.AddCommand(sendCmd())
 	rootCmd.AddCommand(receiveCmd())
 	rootCmd.AddCommand(webCmd())
+	rootCmd.Flags().StringP("addr", "a", ":8080", "Web 服务监听地址（双击运行时生效）")
 }
 
 func webCmd() *cobra.Command {
