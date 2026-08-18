@@ -33,7 +33,7 @@ input[type=range]{width:240px} button{font-size:16px;padding:10px 24px;border:no
 <body>
 <h1>qrcd 发送端</h1>
 <p>选文件，屏幕逐帧播放二维码，用另一台设备摄像头扫。</p>
-<div id="drop">点击或拖入文件<input type="file" id="file" hidden></div>
+<div id="drop"><span id="dlabel">点击或拖入文件</span><input type="file" id="file" hidden></div>
 <div><label>FPS <input type="range" id="fps" min="1" max="20" value="6"><span id="fpsv">6</span></label></div>
 <button id="send">开始发送</button>
 <button id="stop" hidden>停止</button>
@@ -48,7 +48,7 @@ $('drop').onclick=()=>$('file').click();
 ['dragover'].forEach(e=>$('drop').addEventListener(e,ev=>{ev.preventDefault();$('drop').classList.add('hover')}));
 ['dragleave','drop'].forEach(e=>$('drop').addEventListener(e,ev=>{ev.preventDefault();$('drop').classList.remove('hover')}));
 $('drop').addEventListener('drop',ev=>{if(ev.dataTransfer.files[0])$('file').files=ev.dataTransfer.files});
-$('file').onchange=e=>{const f=e.target.files[0];if(f)$('drop').textContent='已选: '+f.name};
+$('file').onchange=e=>{const f=e.target.files[0];if(f)$('dlabel').textContent='已选: '+f.name};
 $('send').onclick=async()=>{
   const fd=new FormData();const f=$('file').files[0];
   if(f)fd.append('file',f); else fd.append('text',prompt('输入要发送的文本','')||'');
