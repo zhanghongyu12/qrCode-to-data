@@ -76,6 +76,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/ingest", s.handleIngest)
 	mux.HandleFunc("/api/recv/status", s.handleRecvStatus)
 	mux.HandleFunc("/api/recv/file", s.handleRecvFile)
+	mux.HandleFunc("/jsQR.js", s.handleJSQR)
 
 	s.srv = &http.Server{Addr: s.addr, Handler: mux}
 

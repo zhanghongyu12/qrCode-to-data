@@ -103,7 +103,7 @@ input{font-size:14px;padding:8px;border-radius:6px;border:1px solid #555;backgro
 <button id="toggle">切换到 ② 光学重放</button>
 <button id="clear">清空</button>
 <div id="lib">QR 解码库加载中…</div>
-<script src="https://cdn.jsdelivr.net/npm/jsQR@1.4.0/dist/jsQR.js"></script>
+<script src="/jsQR.js"></script>
 <script>
 const $=id=>document.getElementById(id);
 const video=$('cam'),out=$('out'),cx=out.getContext('2d');
@@ -111,7 +111,7 @@ const video=$('cam'),out=$('out'),cx=out.getContext('2d');
 let recvUrl=location.origin+'/api/ingest';
 let mode='scan',seen=new Set(),scanning=false,replaying=false,t=null,sent=0,snaps=[];
 function waitLib(){return typeof jsQR!=='undefined'?Promise.resolve():new Promise(r=>setTimeout(()=>waitLib().then(r),200))}
-waitLib().then(()=>{$('lib').textContent=typeof jsQR==='undefined'?'⚠ jsQR 加载失败（需联网）':'QR 解码库就绪 ✓'});
+waitLib().then(()=>{$('lib').textContent=typeof jsQR==='undefined'?'⚠ jsQR 加载失败':'QR 解码库就绪 ✓'});
 // 把 jsQR 解出的字符串还原为原始字节（与发送端 string(data) 入码对称，每 char→1 字节）
 function decStrToBytes(s){const a=new Uint8Array(s.length);for(let i=0;i<s.length;i++)a[i]=s.charCodeAt(i)&0xFF;return a}
 async function postFrame(bytes){
