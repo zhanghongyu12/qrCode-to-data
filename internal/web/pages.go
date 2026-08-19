@@ -76,8 +76,7 @@ function play(){
 }
 </script></body></html>`
 
-// relayPage 手机中继：扫发送端 QR 逐帧解码→转发给接收端。
-// 两种转发：网络转发(把解码出的帧字节 POST 到接收端 /api/ingest)或光学重放。
+// relayPage 手机中继：手动「开始扫描」→ 逐帧解码并缓存 → 「发送到 PC」批量 POST 给接收端。
 const relayPage = `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
@@ -86,22 +85,26 @@ const relayPage = `<!doctype html>
 h1{font-size:18px} video,#out{max-width:96vw;width:100%;border-radius:8px;background:#000}
 video.hidden,#out.hidden{display:none}
 .bar{background:#333;height:8px;border-radius:4px;margin:8px auto;max-width:400px}
-.bar>i{display:block;height:100%;width:0;background:#5d9;border-radius:4px}
+.bar>i{display:block;height:100%;width:0;background:#5d9;border-radius:4px;transition:width .15s}
 button{font-size:16px;padding:12px 24px;border:none;border-radius:8px;background:#2a7;color:#fff;cursor:pointer;margin:6px}
-button:disabled{background:#555} .mode{font-size:14px;color:#9cf;margin:6px}
+button:disabled{background:#555;cursor:default}
+.mode{font-size:14px;color:#9cf;margin:6px}
 input{font-size:14px;padding:8px;border-radius:6px;border:1px solid #555;background:#222;color:#eee;width:80%;max-width:320px}
-#lib{font-size:11px;color:#666} #info{min-height:24px}
+#lib{font-size:11px;color:#666} #info{min-height:40px;font-size:15px}
+.hint{font-size:12px;color:#888}
 </style></head>
 <body>
 <h1>qrcd 手机中继</h1>
-<div class="mode" id="mode">① 扫码：对准发送端二维码</div>
-<div><input id="recvurl" placeholder="接收端地址（默认本机）" value=""></div>
+<div class="mode" id="mode">① 扫码：对准发送端屏幕上的二维码</div>
+<div><input id="recvurl" placeholder="接收端地址（留空=本机）" value=""></div>
 <video id="cam" autoplay playsinline muted></video>
 <canvas id="out" class="hidden"></canvas>
 <div class="bar"><i id="prog"></i></div>
-<div id="info">正在初始化摄像头…</div>
-<button id="toggle">切换到 ② 光学重放</button>
+<div id="info">点「开始扫描」对准发送端二维码</div>
+<button id="scanbtn">开始扫描</button>
+<button id="sendbtn" disabled>发送到 PC</button>
 <button id="clear">清空</button>
+<div class="hint" id="hint"></div>
 <div id="lib">QR 解码库加载中…</div>
 <script src="/jsQR.js"></script>
 <script>
@@ -109,68 +112,90 @@ const $=id=>document.getElementById(id);
 const video=$('cam'),out=$('out'),cx=out.getContext('2d');
 // 默认转发目标 = 本页所在服务器（即打开此页的接收端 PC）
 let recvUrl=location.origin+'/api/ingest';
-let mode='scan',seen=new Set(),scanning=false,replaying=false,t=null,sent=0,snaps=[];
+let seen=new Set(),scanning=false,t=null,buf=[],scanTicks=0,lastDecodeTick=0;
 function waitLib(){return typeof jsQR!=='undefined'?Promise.resolve():new Promise(r=>setTimeout(()=>waitLib().then(r),200))}
 waitLib().then(()=>{$('lib').textContent=typeof jsQR==='undefined'?'⚠ jsQR 加载失败':'QR 解码库就绪 ✓'});
 // 把 jsQR 解出的字符串还原为原始字节（与发送端 string(data) 入码对称，每 char→1 字节）
 function decStrToBytes(s){const a=new Uint8Array(s.length);for(let i=0;i<s.length;i++)a[i]=s.charCodeAt(i)&0xFF;return a}
-async function postFrame(bytes){
-  try{const r=await fetch(recvUrl,{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:bytes});
-    const j=await r.json();if(j&&j.total){sent=j.count;$('prog').style.width=Math.min(100,sent/Math.max(1,j.total)*100)+'%';
-      $('info').textContent='已上传 '+sent+'/'+j.total+' 块'+(j.done?' ✓ 还原完成':'')}}
-  catch(e){$('info').textContent='上传失败: '+e.message+'（检查接收端地址）'}
+async function postOne(bytes){
+  const r=await fetch(recvUrl,{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:bytes});
+  return await r.json();
 }
 async function startScan(){
-  const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
-  video.srcObject=stream;await video.play();scanning=true;loop();
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    video.srcObject=stream;await video.play();scanning=true;scanTicks=0;lastDecodeTick=0;
+    $('scanbtn').textContent='停止扫描';
+    $('info').textContent='扫描中… 对准发送端二维码';
+    $('hint').textContent='';
+    loop();
+  }catch(e){$('info').textContent='摄像头错误: '+e.message}
+}
+function stopScan(){
+  scanning=false;
+  if(video.srcObject){video.srcObject.getTracks().forEach(tr=>tr.stop());video.srcObject=null}
+  out.classList.add('hidden');video.classList.remove('hidden');
+  $('scanbtn').textContent='开始扫描';
+  if(buf.length)$('info').textContent='已停止，共捕获 '+buf.length+' 块，点「发送到 PC」上传';
+  else $('info').textContent='已停止，未捕获到任何帧';
+}
+function flashBox(L){
+  cx.strokeStyle='#5d9';cx.lineWidth=8;cx.beginPath();
+  cx.moveTo(L.topLeftCorner.x,L.topLeftCorner.y);cx.lineTo(L.topRightCorner.x,L.topRightCorner.y);
+  cx.lineTo(L.bottomRightCorner.x,L.bottomRightCorner.y);cx.lineTo(L.bottomLeftCorner.x,L.bottomLeftCorner.y);cx.closePath();cx.stroke();
+  out.classList.remove('hidden');video.classList.add('hidden');
+  setTimeout(()=>{if(scanning){out.classList.add('hidden');video.classList.remove('hidden')}},120);
 }
 function loop(){
-  if(!scanning||mode!=='scan')return;
+  if(!scanning)return;
   if(video.readyState>=2){
     out.width=video.videoWidth;out.height=video.videoHeight;cx.drawImage(video,0,0,out.width,out.height);
     const img=cx.getImageData(0,0,out.width,out.height);
     const r=jsQR(img.data,img.width,img.height,{inversionAttempts:'dontInvert'});
+    scanTicks++;
     if(r&&r.data){
       const key=r.data.length+':'+r.data.slice(0,48);
       if(!seen.has(key)){
-        seen.add(key);
-        if(mode==='scan'){ // 网络转发模式：上传解码出的字节
-          postFrame(decStrToBytes(r.data));
-        }else{ // replay 模式：存快照供回放
-          snaps.push(cx.getImageData(0,0,out.width,out.height));
-          $('info').textContent='已捕获 '+snaps.length+' 帧';
-          $('prog').style.width=Math.min(100,snaps.length*3)+'%';
-        }
-        cx.strokeStyle='#5d9';cx.lineWidth=8;cx.beginPath();
-        const L=r.location;cx.moveTo(L.topLeftCorner.x,L.topLeftCorner.y);cx.lineTo(L.topRightCorner.x,L.topRightCorner.y);
-        cx.lineTo(L.bottomRightCorner.x,L.bottomRightCorner.y);cx.lineTo(L.bottomLeftCorner.x,L.bottomLeftCorner.y);cx.closePath();cx.stroke();
-        out.classList.remove('hidden');video.classList.add('hidden');
-        setTimeout(()=>{if(mode==='scan'||mode==='replay'){out.classList.add('hidden');video.classList.remove('hidden')}},100);
+        seen.add(key);lastDecodeTick=scanTicks;
+        buf.push(decStrToBytes(r.data));
+        $('info').textContent='✓ 已捕获 '+buf.length+' 块'+(buf.length>=2?'（可继续扫，或点「发送到 PC」）':'');
+        $('sendbtn').disabled=false;
+        flashBox(r.location);
       }
+    }
+    // 长时间未识别到二维码时给出提示
+    if(scanTicks-lastDecodeTick>45 && buf.length===0){
+      $('hint').textContent='未识别到二维码，请调整距离/角度/光线';
+    }else if(buf.length>0){
+      $('hint').textContent='';
     }
   }
   requestAnimationFrame(loop);
 }
-function startReplay(){
-  scanning=false;video.srcObject&&video.srcObject.getTracks().forEach(t=>t.stop());
-  video.classList.add('hidden');out.classList.remove('hidden');
-  replaying=true;let k=0;
-  (function next(){
-    if(!replaying||k>=snaps.length){replaying=false;$('info').textContent='重放完成 ✓（再点可重放）';return}
-    out.width=snaps[k].width;out.height=snaps[k].height;cx.putImageData(snaps[k],0,0);
-    $('info').textContent='重放 '+(k+1)+'/'+snaps.length;
-    $('prog').style.width=(100*(k+1)/snaps.length)+'%';k++;t=setTimeout(next,150);
-  })();
+async function sendAll(){
+  if(buf.length===0){$('info').textContent='没有可发送的帧，先扫描';return}
+  $('sendbtn').disabled=true;$('scanbtn').disabled=true;
+  $('info').textContent='发送中… 0/'+buf.length;
+  let sent=0,total=0,done=false,lastErr='';
+  for(let i=0;i<buf.length;i++){
+    try{
+      const j=await postOne(buf[i]);
+      if(j&&j.total)total=j.total;
+      if(j&&j.count)sent=j.count;
+      if(j&&j.done)done=true;
+      $('prog').style.width=Math.min(100,sent/Math.max(1,total||buf.length)*100)+'%';
+      $('info').textContent='发送中 '+(i+1)+'/'+buf.length+'（接收端已收 '+sent+'/'+(total||'?')+'）';
+      if(done){$('info').textContent='✓ 上传完成，接收端已还原 ('+sent+'/'+total+')';break}
+    }catch(e){lastErr=e.message;$('info').textContent='发送失败: '+e.message+'（已发 '+(i+1)+'/'+buf.length+'），检查接收端地址后重试';break}
+  }
+  $('scanbtn').disabled=false;
+  if(!done&&!lastErr)$('info').textContent='发送完毕 ('+buf.length+' 块已上传)；接收端进度 '+sent+'/'+(total||'?');
+  if(!done)$('sendbtn').disabled=false; // 允许重试/补发
 }
-$('toggle').onclick=()=>{
-  if(mode==='scan'){mode='replay';replaying=false;clearTimeout(t);
-    $('mode').textContent='② 光学重放：对准接收端摄像头';$('toggle').textContent='切回 ① 网络转发';startReplay()}
-  else{mode='scan';replaying=false;clearTimeout(t);
-    $('mode').textContent='① 扫码：对准发送端二维码';$('toggle').textContent='切换到 ② 光学重放';startScan()}
-};
-$('recvurl').onchange=e=>{if(e.target.value.trim())recvUrl=e.target.value.trim().replace(/\/$/,'')+'/api/ingest'};
-$('clear').onclick=()=>{seen.clear();snaps=[];sent=0;$('info').textContent='已清空';$('prog').style.width=0};
-startScan().catch(e=>$('info').textContent='摄像头错误: '+e.message);
+$('recvurl').onchange=e=>{const v=e.target.value.trim().replace(/\/$/,'');if(v)recvUrl=v+'/api/ingest'};
+$('clear').onclick=()=>{seen.clear();buf.length=0;$('prog').style.width=0;$('sendbtn').disabled=true;$('info').textContent='已清空，重新扫描';$('hint').textContent=''};
+$('scanbtn').onclick=()=>{scanning?stopScan():startScan()};
+$('sendbtn').onclick=sendAll;
 </script></body></html>`
 
 // receiverPage 网络接收端：无需摄像头。手机中继把扫到的 QR 帧字节 POST 到 /api/ingest，
