@@ -157,7 +157,7 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 
 	load := &payload.Load{Data: data, Name: name, PayloadType: pt, MimeType: mime}
 	st, err := send.BuildStream(load, send.Options{
-		Version: 20, ECC: "L", Redundancy: 0.15, BlockSize: 1024, FPS: 8,
+		Version: 20, ECC: "Q", Redundancy: 0.15, BlockSize: 1024, FPS: 8,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), 400)
@@ -197,7 +197,7 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	item := sess.items[i]
-	code, err := qrcode.Encode(item.Bytes, qrcode.Options{Version: 20, ECC: "L"})
+	code, err := qrcode.Encode(item.Bytes, qrcode.Options{Version: 20, ECC: "Q"})
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return

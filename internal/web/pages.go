@@ -97,8 +97,8 @@ input{font-size:14px;padding:8px;border-radius:6px;border:1px solid #555;backgro
 <h1>qrcd 手机中继</h1>
 <div class="mode" id="mode">① 扫码：对准发送端屏幕上的二维码</div>
 <div><input id="recvurl" placeholder="接收端地址（留空=本机）" value=""></div>
-<video id="cam" autoplay playsinline muted></video>
-<canvas id="out" class="hidden"></canvas>
+<video id="cam" autoplay playsinline muted hidden></video>
+<canvas id="out"></canvas>
 <div class="bar"><i id="prog"></i></div>
 <div id="info">点「开始扫描」对准发送端二维码</div>
 <button id="scanbtn">开始扫描</button>
@@ -124,9 +124,9 @@ async function postOne(bytes){
 async function startScan(){
   try{
     const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
-    video.srcObject=stream;await video.play();scanning=true;scanTicks=0;lastDecodeTick=0;
+    video.srcObject=stream;await video.play();scanning=true;scanTicks=0;lastDecodeTick=0;lastTick=0;
     $('scanbtn').textContent='停止扫描';
-    $('info').textContent='扫描中… 对准发送端二维码';
+    $('info').textContent='扫描中… 对准发送端二维码（让二维码占满大部分画面）';
     $('hint').textContent='';
     loop();
   }catch(e){$('info').textContent='摄像头错误: '+e.message}
@@ -134,7 +134,6 @@ async function startScan(){
 function stopScan(){
   scanning=false;
   if(video.srcObject){video.srcObject.getTracks().forEach(tr=>tr.stop());video.srcObject=null}
-  out.classList.add('hidden');video.classList.remove('hidden');
   $('scanbtn').textContent='开始扫描';
   if(buf.length)$('info').textContent='已停止，共捕获 '+buf.length+' 块，点「发送到 PC」上传';
   else $('info').textContent='已停止，未捕获到任何帧';
@@ -143,15 +142,23 @@ function flashBox(L){
   cx.strokeStyle='#5d9';cx.lineWidth=8;cx.beginPath();
   cx.moveTo(L.topLeftCorner.x,L.topLeftCorner.y);cx.lineTo(L.topRightCorner.x,L.topRightCorner.y);
   cx.lineTo(L.bottomRightCorner.x,L.bottomRightCorner.y);cx.lineTo(L.bottomLeftCorner.x,L.bottomLeftCorner.y);cx.closePath();cx.stroke();
-  out.classList.remove('hidden');video.classList.add('hidden');
-  setTimeout(()=>{if(scanning){out.classList.add('hidden');video.classList.remove('hidden')}},120);
+  // 不再隐藏视频预览，避免扫描中断；短暂高亮后清掉边框
+  setTimeout(()=>{if(scanning){cx.clearRect(0,0,out.width,out.height);cx.drawImage(video,0,0,out.width,out.height)}},150);
 }
+let lastTick=0;
 function loop(){
   if(!scanning)return;
-  if(video.readyState>=2){
-    out.width=video.videoWidth;out.height=video.videoHeight;cx.drawImage(video,0,0,out.width,out.height);
+  // 节流到约 10fps：jsQR 解码较重，每帧都跑会拖垮手机并冻结视频流
+  const now=Date.now();
+  if(now-lastTick<90){requestAnimationFrame(loop);return}
+  lastTick=now;
+  if(video.readyState>=2&&video.videoWidth>0){
+    // 缩小到处理画布（≤640px），jsQR 在较小图像上更快更稳，高分辨率原图反而易失败
+    const scale=Math.min(1,640/Math.max(video.videoWidth,video.videoHeight));
+    out.width=Math.round(video.videoWidth*scale);out.height=Math.round(video.videoHeight*scale);
+    cx.drawImage(video,0,0,out.width,out.height);
     const img=cx.getImageData(0,0,out.width,out.height);
-    const r=jsQR(img.data,img.width,img.height,{inversionAttempts:'dontInvert'});
+    const r=jsQR(img.data,img.width,img.height,{inversionAttempts:'attemptBoth'});
     scanTicks++;
     if(r&&r.data){
       const key=r.data.length+':'+r.data.slice(0,48);
@@ -164,8 +171,8 @@ function loop(){
       }
     }
     // 长时间未识别到二维码时给出提示
-    if(scanTicks-lastDecodeTick>45 && buf.length===0){
-      $('hint').textContent='未识别到二维码，请调整距离/角度/光线';
+    if(scanTicks-lastDecodeTick>30 && buf.length===0){
+      $('hint').textContent='未识别到二维码，请调整距离/角度/光线，或让二维码占满更多画面';
     }else if(buf.length>0){
       $('hint').textContent='';
     }
