@@ -61,3 +61,12 @@ coverage.out
 /qrcd-cert.pem
 /qrcd-key.pem
 /downloads/
+
+# Android App 构建产物（APK 不入 git，由 web /dl/app.apk 运行时提供下载）
+/qrcd-app-debug.apk
+android/.gradle/
+android/local.properties
+android/app/build/
+android/build/
+android/captures/
+android/*.iml

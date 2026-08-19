@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image/png"
@@ -70,6 +71,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/sender", s.handleSender)
 	mux.HandleFunc("/relay", s.handleRelay)
 	mux.HandleFunc("/receiver", s.handleReceiver)
+	mux.HandleFunc("/scantest", s.handleScanTest)
 	mux.HandleFunc("/api/encode", s.handleEncode)
 	mux.HandleFunc("/api/frame/", s.handleFrame)
 	mux.HandleFunc("/api/status", s.handleStatus)
@@ -77,6 +79,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/recv/status", s.handleRecvStatus)
 	mux.HandleFunc("/api/recv/file", s.handleRecvFile)
 	mux.HandleFunc("/jsQR.js", s.handleJSQR)
+	mux.HandleFunc("/dl/app.apk", s.handleAPKDownload)
+	mux.HandleFunc("/api/qrcode", s.handleQRCode)
 
 	s.srv = &http.Server{Addr: s.addr, Handler: mux}
 
@@ -109,6 +113,8 @@ func (s *Server) Start(ctx context.Context) error {
 	fmt.Printf("\nqrcd Web 三端已启动:\n")
 	fmt.Printf("  发送端(本机选文件→播放 QR): http://localhost%s/sender\n", s.addr)
 	fmt.Printf("  接收端(等手机上传→还原):    http://localhost%s/receiver\n", s.addr)
+	fmt.Printf("  手机App下载:                http://<本机IP>%s/dl/app.apk\n", s.addr)
+	fmt.Printf("  首页(含App下载二维码):      http://localhost%s/\n", s.addr)
 	if httpsAddr != "" {
 		fmt.Printf("  手机中继(扫码→转发,需HTTPS): https://<本机IP>%s/relay\n", httpsAddr)
 		fmt.Println("  手机首次访问会提示证书不安全，点「高级/继续访问」即可开摄像头。")
@@ -197,13 +203,36 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	item := sess.items[i]
-	code, err := qrcode.Encode(item.Bytes, qrcode.Options{Version: 20, ECC: "Q"})
+	// 帧字节做 base64 编码后再入 QR：内容变为纯可打印 ASCII，
+	// jsQR 解码可打印 byte-mode 内容稳定可靠（二进制高字节 jsQR 会失败，见 DEC-007）。
+	// 手机端 jsQR 解出字符串后用 atob 还原为原始帧字节。
+	code, err := qrcode.Encode([]byte(base64.StdEncoding.EncodeToString(item.Bytes)), qrcode.Options{Version: 20, ECC: "Q"})
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
 	w.Header().Set("Content-Type", "image/png")
-	png.Encode(w, code.Image(4))
+	png.Encode(w, code.Image(8))
+}
+
+// handleQRCode /api/qrcode?d=<文本> 返回任意文本的标准 QR PNG（如 App 下载链接二维码）。
+func (s *Server) handleQRCode(w http.ResponseWriter, r *http.Request) {
+	d := r.URL.Query().Get("d")
+	if d == "" {
+		http.Error(w, "缺少 d 参数", 400)
+		return
+	}
+	code, err := qrcode.Encode([]byte(d), qrcode.Options{Version: 10, ECC: "M"})
+	if err != nil {
+		// 短链一般 v10 足够；失败再尝试更高版本
+		code, err = qrcode.Encode([]byte(d), qrcode.Options{Version: 20, ECC: "M"})
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "image/png")
+	png.Encode(w, code.Image(8))
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -228,6 +257,13 @@ func (s *Server) handleRelay(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleReceiver(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	io.WriteString(w, receiverPage)
+}
+
+// handleScanTest /scantest：静态 QR 自检页。把当前第 0 帧 PNG 画到 canvas，
+// 用 jsQR 直接解码（不经摄像头），用于判断"QR 本身 jsQR 能否解出" vs "摄像头能否拍到"。
+func (s *Server) handleScanTest(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	io.WriteString(w, scanTestPage)
 }
 
 // handleIngest 接收中继手机 POST 上来的单帧原始字节（= QR 解码出的 QRCD 帧字节），
