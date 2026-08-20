@@ -1,6 +1,8 @@
 package fec
 
 import (
+	"math"
+
 	fountain "github.com/google/gofountain"
 )
 
@@ -10,7 +12,9 @@ type raptorCodecImpl struct {
 }
 
 // NewRaptorCodec 创建 Raptor Codec
-// sourceSymbols: 源符号数，须在 [4, 8192] 范围内
+// sourceSymbols: 源符号数，须在 [4, 8192] 范围内。
+// 注意：gofountain 在 K=8192 时内部矩阵求解会越界 panic，实际安全上限约 4096；
+// 发送端经多会话分片（DEC-012）保证单会话 K ≤ 1024，本层仅按库能力放宽。
 func NewRaptorCodec(sourceSymbols int) Codec {
 	return &raptorCodecImpl{sourceSymbols: sourceSymbols}
 }
@@ -32,14 +36,28 @@ func (c *raptorCodecImpl) NewEncoder(data []byte, blockSize int, redundancy floa
 		sourceSymbols = max(1, (len(data)+blockSize-1)/blockSize)
 	}
 
-	// 创建 gofountain Raptor codec，alignmentSize=4
+	// 一次性预生成全部编码符号（含冗余）。gofountain 的 EncodeLTBlocks 每次调用
+	// 都会重建 O(K²) 的中间符号块；逐符号调用总代价为 O(K³)（K=1024 实测约 95s），
+	// 大文件完全不可用。批量传入全部符号 id，中间块只重建一次，总代价 O(K²)
+	// （K=1024 实测约 110ms，K=4096 约 2s）。符号 id 从 0 递增，解码端按 id 匹配，
+	// 输出与旧逐符号方式完全一致，仅速度快数百倍。
+	total := sourceSymbols + int(math.Ceil(redundancy*float64(sourceSymbols)))
+	if total < sourceSymbols {
+		total = sourceSymbols
+	}
+	ids := make([]int64, total)
+	for i := range ids {
+		ids[i] = int64(i)
+	}
+	// EncodeLTBlocks 破坏性修改入参，传入副本
+	src := make([]byte, len(data))
+	copy(src, data)
 	fc := fountain.NewRaptorCodec(sourceSymbols, 4)
+	blocks := fountain.EncodeLTBlocks(src, ids, fc)
 
 	return &raptorEncoderImpl{
-		data:          data,
 		sourceSymbols: sourceSymbols,
-		nextID:        0,
-		fc:            fc,
+		symbols:       blocks,
 	}, nil
 }
 
@@ -56,12 +74,12 @@ func (c *raptorCodecImpl) NewDecoder(sourceSymbols int, messageLength int) Decod
 	}
 }
 
-// raptorEncoderImpl Raptor 编码器实现
+// raptorEncoderImpl Raptor 编码器实现。
+// 预生成全部编码符号（含冗余），逐符号顺序返回，避免每次调用都重建 O(K²) 中间块。
 type raptorEncoderImpl struct {
-	data          []byte
 	sourceSymbols int
+	symbols       []fountain.LTBlock
 	nextID        uint32
-	fc            fountain.Codec
 }
 
 // SourceSymbols 返回源符号数量
@@ -69,21 +87,14 @@ func (e *raptorEncoderImpl) SourceSymbols() int {
 	return e.sourceSymbols
 }
 
-// NextSymbol 返回下一个编码符号
-// 每次调用创建 data 副本，因为 EncodeLTBlocks 会破坏性修改输入
+// NextSymbol 返回下一个编码符号；耗尽后返回 nil 表示结束。
 func (e *raptorEncoderImpl) NextSymbol() (uint32, []byte) {
-	id := e.nextID
-	e.nextID++
-
-	// 复制数据，因为 EncodeLTBlocks 是破坏性的
-	dataCopy := make([]byte, len(e.data))
-	copy(dataCopy, e.data)
-
-	blocks := fountain.EncodeLTBlocks(dataCopy, []int64{int64(id)}, e.fc)
-	if len(blocks) == 0 {
-		return id, nil
+	if int(e.nextID) >= len(e.symbols) {
+		return e.nextID, nil
 	}
-	return id, blocks[0].Data
+	b := e.symbols[e.nextID]
+	e.nextID++
+	return uint32(b.BlockCode), b.Data
 }
 
 // raptorDecoderImpl Raptor 解码器实现

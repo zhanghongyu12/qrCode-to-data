@@ -137,11 +137,11 @@ qrcd receive [flags]
 }
 ```
 
-- 多会话分片（大文件拆为 N 个独立传输会话，见 DEC-012）时，第 0 分片（partIndex=0）额外携带整体信息：
+- 多会话分片（大文件拆为 N 个独立传输会话，见 DEC-012）时，**所有分片均携带 `overallHash` 作为整体关联键**（接收端按此把各分片归入同一传输），仅 `partIndex=0` 额外携带整体文件名/大小：
 
 ```json
 {
-  "name": "part_0.tar.gz.part",
+  "name": "backup.tar.gz.part0",
   "size": 131072,
   "blockSize": 1024,
   "blockCount": 128,
@@ -160,9 +160,30 @@ qrcd receive [flags]
 }
 ```
 
+非 `partIndex=0` 的分片（如 `backup.tar.gz.part2`）只携带 `overallHash`（与 part 0 同值），无 `overallName`/`overallSize`：
+
+```json
+{
+  "name": "backup.tar.gz.part2",
+  "size": 131072,
+  "blockSize": 1024,
+  "blockCount": 128,
+  "hashAlgo": "sha256",
+  "hash": "<part2_sha256>",
+  "fec": "raptor",
+  "redundancy": 0.1,
+  "payloadType": "file",
+  "mimeType": "application/octet-stream",
+  "totalSymbols": 141,
+  "partIndex": 2,
+  "partTotal": 4,
+  "overallHash": "<overall_sha256>"
+}
+```
+
 | 字段 | 必需 | 说明 |
 |------|------|------|
-| `name` | 是 | 原始文件名（分片时 = 整体文件名 + `.part` 后缀，如 `backup.tar.gz.part`）；文本载荷为 `<文本摘要>.txt` 或用户指定 |
+| `name` | 是 | 原始文件名（分片时 = 整体文件名 + `.partN`，如 `backup.tar.gz.part0`）；文本载荷为 `<文本摘要>.txt` 或用户指定 |
 | `size` | 是 | 本分片载荷字节数（分片时 = 该分片实际字节数，非整体大小） |
 | `blockSize` / `blockCount` | 是 | 源分块大小与源块数 |
 | `hashAlgo` / `hash` | 是 | 本分片完整性校验算法与值（分片时 = 该分片 SHA-256，非整体） |
@@ -174,13 +195,13 @@ qrcd receive [flags]
 | `partTotal` | 否（分片时必需） | 总分片数。单会话时缺省 |
 | `overallName` | 否（仅 part 0） | 整体原始文件名（仅 partIndex=0 携带，拼接后落盘的文件名） |
 | `overallSize` | 否（仅 part 0） | 整体总字节数（仅 partIndex=0 携带） |
-| `overallHash` | 否（仅 part 0） | 整体 SHA-256（仅 partIndex=0 携带，接收端拼接后按此校验） |
+| `overallHash` | 否（分片时必需） | 整体 SHA-256，**所有分片均携带**（整体关联键），接收端拼接后按此校验 |
 
 **分片语义**（DEC-012）：
-- 大文件（超过单会话 Raptor 容量上限 K≤8192）自动拆为 N 个分片会话，各分片独立 `transfer_id`、独立 QR 流。
+- 大文件（超过单会话 Raptor 实际安全上限 K≤1024）自动拆为 N 个分片会话，各分片独立 `transfer_id`、独立 QR 流。
 - 每个分片有自己的 `name`/`size`/`hash`（分片级），可独立校验、断点重发分片。
-- `partIndex=0` 的分片额外携带 `overallName`/`overallSize`/`overallHash`，接收端收齐 N 个分片后按序（partIndex 0..N-1）拼接字节，对整体计算 SHA-256 与 `overallHash` 比对，通过后以 `overallName` 落盘。
-- 分片大小自动计算：`partSize = 8192 × symbolSize`（symbolSize 受 MaxSymbol 与 QR 版本容量约束），`partTotal = ceil(原始数据总长 / partSize)`。发送端保证每会话源块数 ≤8192。
+- 所有分片携带统一 `overallHash`（关联键），仅 `partIndex=0` 额外携带 `overallName`/`overallSize`。接收端按 `overallHash` 把各分片归入同一传输，收齐 N 个分片后按序（partIndex 0..N-1）拼接字节，对整体计算 SHA-256 与 `overallHash` 比对，通过后以 `overallName` 落盘。
+- 分片大小自动计算：`partSize = 1024 × symbolSize`（symbolSize 受 MaxSymbol 与 QR 版本容量约束），`partTotal = ceil(原始数据总长 / partSize)`。发送端保证每会话源块数 ≤1024（gofountain 在 K 过高时矩阵求解越界，见 DEC-012）。
 
 - 元数据帧在发送过程中**周期性重播**（默认每 20 个数据帧重播一次），保证接收端中途加入或漏收元数据也能恢复。
 

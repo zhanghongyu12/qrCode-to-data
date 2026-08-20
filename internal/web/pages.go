@@ -106,7 +106,7 @@ input[type=range]{width:240px} button{font-size:16px;padding:10px 24px;border:no
 <div id="info"></div>
 <script>
 const $=id=>document.getElementById(id);
-let frames=0,symbols=0,name='',size=0,playing=false,i=0,timer=null;
+let frames=0,symbols=0,name='',size=0,parts=1,partSizes=[],playing=false,i=0,timer=null;
 $('fps').oninput=e=>$('fpsv').textContent=e.target.value;
 $('drop').onclick=()=>$('file').click();
 ['dragover'].forEach(e=>$('drop').addEventListener(e,ev=>{ev.preventDefault();$('drop').classList.add('hover')}));
@@ -120,19 +120,32 @@ $('send').onclick=async()=>{
   const r=await fetch('/api/encode',{method:'POST',body:fd});
   const j=await r.json();
   if(!r.ok){$('info').textContent='错误';return}
-  frames=j.frames;symbols=j.symbols||0;name=j.name;size=j.size;i=0;playing=true;
+  frames=j.frames;symbols=j.symbols||0;name=j.name;size=j.size;parts=j.parts||1;partSizes=j.partSizes||[];
+  i=0;playing=true;
   $('send').hidden=true;$('stop').hidden=false;
   // symbols = 编码符号总数（含冗余），与接收端进度基准一致；frames 含元数据重播帧，仅内部播放用。
-  $('info').textContent='文件: '+name+' ('+size+'B), 共 '+(symbols||frames)+' 块数据符号（含冗余纠错）';
+  $('info').textContent='文件: '+name+' ('+size+'B), 共 '+(symbols||frames)+' 块数据符号（含冗余纠错）'
+    +(parts>1?'，已自动拆分为 '+parts+' 个分片会话（大文件，逐分片播放，接收端自动拼接）':'');
   play();
 };
 $('stop').onclick=()=>{playing=false;clearTimeout(timer);$('send').hidden=false;$('stop').hidden=true;$('info').textContent='已停止'};
 // 链式播放：等当前帧 PNG 加载并绘制完，再按 FPS 间隔调度下一帧。
 // 这样不会因图片加载慢导致帧错乱或"卡住不动"。
+// 当前帧在哪个分片：扁平帧号 → (分片号, 分片内帧号)。多会话分片时展示"分片 X/Y"。
+function curPart(idx){
+  if(!partSizes||partSizes.length<=1)return null;
+  let n=idx;
+  for(let p=0;p<partSizes.length;p++){
+    if(n<partSizes[p])return {part:p+1,total:parts,local:n+1,localTotal:partSizes[p]};
+    n-=partSizes[p];
+  }
+  return null;
+}
 function play(){
   if(!playing)return;
   if(i>=frames){$('info').textContent='✓ 已播完一轮，循环重放中（帧 '+frames+'）';i=0}
   const idx=i;i++;
+  const cp=curPart(idx);
   const img=new Image();
   img.onload=()=>{
     if(!playing)return;
@@ -140,7 +153,10 @@ function play(){
     const sc=Math.max(1,Math.floor(tgt/img.width));c.width=img.width*sc;c.height=img.height*sc;
     const x=c.getContext('2d');x.imageSmoothingEnabled=false;x.drawImage(img,0,0,c.width,c.height);
     $('prog').style.width=Math.min(100,100*idx/Math.max(1,(symbols||frames)))+'%';
-    $('info').textContent='播放中：第 '+Math.min(idx+1,(symbols||frames))+'/'+(symbols||frames)+' 块｜文件: '+name+' ('+size+'B)';
+    let label='播放中：第 '+Math.min(idx+1,(symbols||frames))+'/'+(symbols||frames)+' 块';
+    if(cp)label+='｜分片 '+cp.part+'/'+cp.total+'（块 '+cp.local+'/'+cp.localTotal+'）';
+    label+='｜文件: '+name+' ('+size+'B)';
+    $('info').textContent=label;
     timer=setTimeout(play,1000/parseInt($('fps').value));
   };
   img.onerror=()=>{if(!playing)return;

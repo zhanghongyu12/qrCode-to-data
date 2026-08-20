@@ -56,17 +56,28 @@ type MetaData struct {
 	// TotalSymbols 发送端计划发送的编码符号总数（含冗余，不含元数据重播帧）。
 	// 接收端用作进度基准，使"已收/总数"与发送端、手机端的计数对齐。
 	TotalSymbols int `json:"totalSymbols,omitempty"`
+	// PartIndex 分片序号（0-based），仅多会话分片时携带（DEC-012）。
+	PartIndex int `json:"partIndex,omitempty"`
+	// PartTotal 总分片数，仅多会话分片时携带。
+	PartTotal int `json:"partTotal,omitempty"`
+	// OverallName 整体原始文件名，仅 partIndex=0 携带。
+	OverallName string `json:"overallName,omitempty"`
+	// OverallSize 整体总字节数，仅 partIndex=0 携带。
+	OverallSize int64 `json:"overallSize,omitempty"`
+	// OverallHash 整体 SHA-256 校验值，所有分片均携带（整体关联键），
+	// 接收端按此把各分片归入同一传输，拼接完成后按此校验。
+	OverallHash string `json:"overallHash,omitempty"`
 }
 
 // Header 帧头结构（32 字节）
 type Header struct {
-	Magic      [4]byte // "QRCD"
-	Version    byte    // 协议版本 0x01
-	Type       byte    // 0x01 元数据帧 / 0x02 数据帧
-	Flags      uint16  // bit0 载荷类型 / bit1 FEC
+	Magic      [4]byte  // "QRCD"
+	Version    byte     // 协议版本 0x01
+	Type       byte     // 0x01 元数据帧 / 0x02 数据帧
+	Flags      uint16   // bit0 载荷类型 / bit1 FEC
 	TransferID [16]byte // 会话 ID
-	Seq        uint32  // 帧序号
-	Len        uint32  // payload 长度
+	Seq        uint32   // 帧序号
+	Len        uint32   // payload 长度
 }
 
 // Frame 完整帧结构

@@ -20,9 +20,12 @@ import (
 )
 
 // session 一次发送会话：预生成全部帧（用于发送端逐帧取 PNG）。
+// 多会话分片（DEC-012）时 items 为各分片帧按序拼接（扁平索引），
+// partSizes[i] 记录第 i 个分片的帧数，供发送端展示"分片 X/Y"。
 type session struct {
-	items   []*send.StreamItem
-	current int
+	items     []*send.StreamItem
+	partSizes []int
+	current   int
 }
 
 // recvSession 网络接收会话：手机中继把扫到的 QR 帧字节 POST 到 /api/ingest。
@@ -130,7 +133,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, indexPage)
 }
 
-// handleEncode 接收文件/文本，BuildStream 预生成全部帧 PNG 序列。
+// handleEncode 接收文件/文本，BuildSessionStreams 预生成全部帧 PNG 序列。
+// 大文件自动多会话分片（DEC-012），各分片帧按序拼成扁平 items，partSizes 记录分片边界。
 func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", 405)
@@ -161,7 +165,7 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	load := &payload.Load{Data: data, Name: name, PayloadType: pt, MimeType: mime}
-	st, err := send.BuildStream(load, send.Options{
+	streams, err := send.BuildSessionStreams(load, send.Options{
 		Version: 15, ECC: "Q", Redundancy: 0.25, BlockSize: 1024, FPS: 8, MaxSymbol: 151,
 	})
 	if err != nil {
@@ -169,24 +173,42 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var items []*send.StreamItem
-	for {
-		it, ok := st.Next()
-		if !ok {
-			break
+	var partSizes []int
+	totalSymbols := 0
+	for _, st := range streams {
+		n0 := len(items)
+		for {
+			it, ok := st.Next()
+			if !ok {
+				break
+			}
+			cp := it
+			items = append(items, &cp)
 		}
-		cp := it
-		items = append(items, &cp)
+		partSizes = append(partSizes, len(items)-n0)
+		totalSymbols += st.Meta().TotalSymbols
 	}
 	s.mu.Lock()
-	s.sess = &session{items: items}
+	s.sess = &session{items: items, partSizes: partSizes}
 	s.mu.Unlock()
 
+	// 响应带整体信息：多会话时 name/hash 取 part 0 的 overall 字段
+	m0 := streams[0].Meta()
+	respName, respHash := name, m0.Hash
+	if m0.OverallName != "" {
+		respName = m0.OverallName
+	}
+	if m0.OverallHash != "" {
+		respHash = m0.OverallHash
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"frames":   len(items),
-		"symbols":  st.Meta().TotalSymbols,
-		"name":     name,
-		"size":     len(data),
-		"hash":     st.Meta().Hash,
+		"frames":    len(items),
+		"symbols":   totalSymbols,
+		"name":      respName,
+		"size":      len(data),
+		"hash":      respHash,
+		"parts":     len(streams),
+		"partSizes": partSizes,
 	})
 }
 
@@ -245,10 +267,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	sess := s.sess
 	s.mu.Unlock()
 	ready := sess != nil && len(sess.items) > 0
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	resp := map[string]interface{}{
 		"ready":  ready,
 		"frames": func() int { if sess == nil { return 0 }; return len(sess.items) }(),
-	})
+		"parts":  func() int { if sess == nil { return 1 }; return len(sess.partSizes) }(),
+	}
+	if sess != nil && len(sess.partSizes) > 0 {
+		resp["partSizes"] = sess.partSizes
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) handleSender(w http.ResponseWriter, r *http.Request) {

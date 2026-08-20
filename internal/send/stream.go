@@ -14,6 +14,13 @@ import (
 // 保证接收端中途加入或漏收元数据也能初始化会话。
 const metaReplayEvery = 20
 
+// maxSourceK 单会话 Raptor 源块数上限（DEC-012）。
+// 取 1024 而非 RFC 5053 的理论上限 8192：
+//   - gofountain 在 K=8192 时内部矩阵求解越界 panic（实测）；
+//   - 批量编码总代价 O(K²)，K=1024 编码约 110ms / 解码约 100ms，实时播放不卡顿；
+//   - 超过此上限的载荷由 BuildSessionStreams 自动拆分为多个独立传输会话。
+const maxSourceK = 1024
+
 // StreamItem 一帧播放单元（元数据帧或数据帧），Bytes 为已序列化帧字节。
 type StreamItem struct {
 	IsMeta bool
@@ -142,9 +149,9 @@ func BuildStream(load *payload.Load, opts Options) (*Stream, error) {
 				symbolSize = 1
 			}
 		}
-		if sourceK > 8192 {
-			return nil, fmt.Errorf("%w: 数据 %d 字节超过 Raptor 单会话上限（K≤8192，约 %d 字节），请拆分数据或减小 --block-size",
-				ErrUsage, len(load.Data), 8192*maxPayload)
+		if sourceK > maxSourceK {
+			return nil, fmt.Errorf("%w: 数据 %d 字节超过 Raptor 单会话安全上限（K≤%d，约 %d 字节），将自动多会话分片；请直接调用 BuildSessionStreams 或 Send",
+				ErrUsage, len(load.Data), maxSourceK, maxSourceK*maxPayload)
 		}
 		if symbolSize > maxPayload {
 			return nil, fmt.Errorf("%w: 数据 %d 字节无法适配 QR version %d（EC %s）单帧容量 %d 字节，请增大 --version 或减小 --block-size",
@@ -205,6 +212,89 @@ func BuildStream(load *payload.Load, opts Options) (*Stream, error) {
 		totalData:   totalData,
 		pendingMeta: true,
 	}, nil
+}
+
+// BuildSessionStreams 构建多会话分片帧流列表（DEC-012）。
+// 大文件（超过单会话 Raptor 安全上限 maxSourceK）自动拆为 N 个独立传输会话：
+//   - 各分片独立 transfer_id、独立 QR 流、独立 name/size/hash（分片级校验）
+//   - 分片大小 partSize = maxSourceK × symbolSize，partTotal = ceil(原始总长 / partSize)
+//   - 每分片分块大小自动取 ceil(分片长 / maxSourceK)，保证单会话源块数 ≤ maxSourceK
+//   - 所有分片均携带 overallHash 作为整体关联键；仅 partIndex=0 额外携带
+//     overallName/overallSize（整体文件信息，接收端拼接落盘用）
+//
+// 数据不足单会话容量时返回单流（行为与 BuildStream 完全一致，向后兼容）。
+func BuildSessionStreams(load *payload.Load, opts Options) ([]*Stream, error) {
+	if load == nil || len(load.Data) == 0 {
+		return nil, fmt.Errorf("%w: 载荷为空，无需发送", ErrUsage)
+	}
+
+	maxPayload, err := maxFramePayload(opts.Version, opts.ECC)
+	if err != nil {
+		return nil, err
+	}
+	// 单符号字节上限：与 BuildStream 保持一致（MaxSymbol 优先，提升手机扫码识别率）
+	dataMax := maxPayload
+	if opts.MaxSymbol > 0 && opts.MaxSymbol < dataMax {
+		dataMax = opts.MaxSymbol
+	}
+	if dataMax < 1 {
+		return nil, fmt.Errorf("%w: QR version %d（EC %s）容量过小，无法承载帧头", ErrUsage, opts.Version, opts.ECC)
+	}
+
+	partSize := maxSourceK * dataMax
+	partTotal := (len(load.Data) + partSize - 1) / partSize
+	if partTotal <= 1 {
+		st, err := BuildStream(load, opts)
+		if err != nil {
+			return nil, err
+		}
+		return []*Stream{st}, nil
+	}
+
+	overallHash := payload.SHA256Hex(load.Data)
+	streams := make([]*Stream, 0, partTotal)
+	for i := 0; i < partTotal; i++ {
+		start := i * partSize
+		end := start + partSize
+		if end > len(load.Data) {
+			end = len(load.Data)
+		}
+		partData := load.Data[start:end]
+
+		po := opts
+		// 每分片保证源块数 ≤ maxSourceK：分块大小 = ceil(分片长 / maxSourceK)。
+		// 满片时 K=1024 恰在上限；余量分片 K 更小（≤1 时走 none 直通）。
+		po.BlockSize = (len(partData) + maxSourceK - 1) / maxSourceK
+		if po.BlockSize < 1 {
+			po.BlockSize = 1
+		}
+		if po.BlockSize > dataMax {
+			po.BlockSize = dataMax
+		}
+
+		partLoad := &payload.Load{
+			Data:        partData,
+			Name:        fmt.Sprintf("%s.part%d", load.Name, i),
+			PayloadType: load.PayloadType,
+			MimeType:    load.MimeType,
+		}
+		st, err := BuildStream(partLoad, po)
+		if err != nil {
+			return nil, fmt.Errorf("send: 构建分片 %d/%d 失败: %w", i+1, partTotal, err)
+		}
+		// 注入分片元数据（DEC-012）；所有分片携带 overallHash 作为整体关联键，
+		// 接收端用同一 overallHash 把各分片归入同一传输。仅 part 0 额外携带整体
+		// name/size（整体文件信息，拼接落盘用），避免冗余携带大文件名。
+		st.meta.PartIndex = i
+		st.meta.PartTotal = partTotal
+		st.meta.OverallHash = overallHash
+		if i == 0 {
+			st.meta.OverallName = load.Name
+			st.meta.OverallSize = int64(len(load.Data))
+		}
+		streams = append(streams, st)
+	}
+	return streams, nil
 }
 
 // maxFramePayload 计算单帧 payload（不含 32B 头与 4B CRC）在给定 version/ecc 下的字节上限。

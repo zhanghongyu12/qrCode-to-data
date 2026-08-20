@@ -253,6 +253,15 @@
 - 最终选择：采用多会话分片方案；partIndex 0-based、omitempty；分片级 name/size/hash + part 0 整体 overall* 字段；接收端按 partIndex 缓存拼接后校验整体 SHA-256。
 - 状态：已确认
 
+### DEC-012 实现修订（2026-08-20 TASK-015）
+
+实现期对上述契约做了两处细化，与原文略有出入，以本节为准：
+
+1. **K 上限取 1024 而非 8192**：gofountain 在 K 接近 8192 时内部矩阵求解会越界 panic，且 O(K²) 编码代价在 K=4096 时已达约 2s。发送端以 `maxSourceK = 1024` 为单会话安全上限，`partSize = 1024 × symbolSize`（symbolSize 受 MaxSymbol 与 QR 版本容量约束），`partTotal = ceil(数据总长 / partSize)`。每分片分块大小自动取 `ceil(分片长 / 1024)`，满片时恰 K=1024。
+2. **overallHash 为所有分片的关联键**：仅 part 0 携带 `overallName`/`overallSize` 的原始设计存在契约缺口——非 part 0 分片若先于 part 0 到达（网络乱序、分片重发），接收端无法把它们归入同一整体传输。实现修订为：**所有分片均携带 `overallHash`**（接收端按此键聚合），仅 part 0 额外携带 `overallName`/`overallSize`（整体文件信息，拼接落盘用）。
+3. **接收端聚合键为 `overallHash` 而非 `transfer_id`**：各分片独立 transfer_id，接收端 `Processor.assemblies map[overallHash]*partAssembly` 按 `overallHash` 聚合，收集齐 0..partTotal-1 后按序拼接 → 整体 SHA-256 校验 → 以 `overallName` 落盘。
+4. **Raptor 编码器改预生成**：`NextSymbol` 由逐符号重建 O(K³) 中间块改为一次性批量预生成 `K + ceil(redundancy·K)` 个符号（O(K²)，K=1024 实测约 110ms），耗尽后返回 nil 作为流终止信号。`TestNextSymbolInfinite` 相应改为 `TestNextSymbolFinite`。
+
 ---
 
 ## 模板示例

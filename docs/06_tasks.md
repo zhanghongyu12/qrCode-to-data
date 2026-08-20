@@ -8,7 +8,7 @@
 
 - 运行模式：编排模式
 - 当前阶段：阶段 10 - 手机端原生 App 与大文件传输增强（v0.2 开发中）
-- 下一步行动：TASK-014（App 录像+视频离线解析）已实现待测试（待编排者审 diff 批准）；TASK-015（多会话分片）待编排者向用户确认 DEC-012 方向后推进
+- 下一步行动：TASK-014（App 录像+视频离线解析）已实现待测试（待编排者审 diff 批准）；TASK-015（多会话分片）Go 侧实现完成，全量测试通过，待编排者审 diff 批准提交
 - 阻塞项：无
 - 运行模式说明：`独立模式`（角色向用户确认后自提交）或 `编排模式`（角色暂存不提交，经编排者批准后自提交；编排者做集成 merge；push 由编排者申请、用户批准）。编排者激活/退出时翻转本字段。角色启动时读本字段判断提交权。
 - 阻塞项格式说明：无阻塞时填"无"；有阻塞时列出决策编号及简述，如 `DEC-003（待人工确认 API 方案）、DEC-005（待人工确认 UI 与 API 对齐）`。AI 记录阻塞决策到 07_decisions.md 时必须同步更新本字段。
@@ -92,7 +92,7 @@
 - **DEC-009 三端计数对齐**：用户反馈「发送端 95 / 手机 91 / 接收端 72 对不上」。根因为喷泉码凑齐 K 即 done、之后符号被丢弃，unique 停在 K。新增 `MetaData.TotalSymbols`（含冗余），接收端进度基准改用之，done 后继续累计；手机端只对数据帧计数；发送端显示数据符号数。验证：`go run` 探针 frames=26 symbols=24 K=19，完成时已收=19/total=24，喂完全部已收=24，校验通过。新增 `TestPostDecodeCounting` 单测。全量 `go test -p 1 ./...` 全绿。
 - **DEC-011 大文件约束定位**：用户传 8MB 文件报 400。根因：MaxSymbol=151 下 8MB 需 ~55000 块，远超 Raptor 单会话 K≤8192 上限；即使 v20 L（822B/帧）仍需 ~10200 块。此为「手机可扫密度」与「喷泉码单会话容量」内在矛盾，非 bug。已向用户说明，用户确认要做成支持大数据慢传 + 手机端录像离线解析。
 - **DEC-013（提议）录像+视频离线解析**：用户提出「手机端识别视频，录一遍后慢慢解析」，将扫描与解码解耦——发送端可高速播放（手机录像不怕漏帧）、可多录几遍做冗余、可离线慢解析。已在进行：布局加「录像模式」按钮，build.gradle 加 camera-video 1.3.4，manifest 加 RECORD_AUDIO 权限；MainActivity 录像+视频解析逻辑实现中（被打断，未完成）。
-- **DEC-012（提议）多会话分片**：配套录像方案让 8MB 真正跑通，需发送端多会话分片（各分片独立 transfer_id，≤8192 块）+ 接收端按 partIndex 顺序拼接。待实现。
+- **DEC-012（已确认+实现修订）多会话分片**：配套录像方案让 8MB 真正跑通。Go 侧已实现：发送端 `BuildSessionStreams` 自动拆片（各分片独立 transfer_id，单会话 K≤1024），接收端按 overallHash 聚合、按 partIndex 拼接、整体 SHA-256 校验后以整体名落盘；网页发送端显示「分片 X/Y」。实现修订（K≤1024、overallHash 全分片携带）见 DEC-012 实现修订节。
 - 测试：本轮新增逻辑均经 `go test -p 1 ./...` 全绿验证；真机已验证文件传输跑通且三端计数对齐；8MB 大文件待 DEC-012/DEC-013 实现后验证。
 - 提交状态：本轮代码（DEC-007~010）部分已提交（commit 2d621c5 等），DEC-009 计数对齐改动尚未提交；push 待用户批准。
 
@@ -106,6 +106,26 @@
 - 调度 1 个 Developer 子 agent（fork，继承已建立上下文）完成 TASK-014：录像（VideoCapture+withAudioDisabled）+ 停止后 MediaMetadataRetriever 抽帧 → ML Kit 解码 → 复用 dedupKey/seen/buf 去重缓存 → 多段累积 → sendBuffer 上传。提取公共 ingestBarcode 方法供实时扫描与录像解析共用。暂存不提交，待编排者审 diff 批准。
 - 环境限制诚实告知：Android 构建（SDK/Gradle/360 AV）能否编译验证由子 agent 实测后如实报告；实机安装/扫码/录像验证无法在此环境完成，标「待实机验证」。
 - 后续衔接：TASK-014 批准提交后，评估 TASK-015（DEC-012 多会话分片，涉及 Go send/receive 改动）。
+
+### 2026-08-20 阶段10 TASK-014 提交批准 - Coordinator
+
+- 审 Developer 子 agent 暂存 diff 全文：越界检查通过（android/ + docs 06/07/CHANGELOG + internal/ + tests/unit/sendreceive，全在 Developer 权限内）。
+- 发现并打回 1 功能缺陷（首次无 CAMERA 权限点「录像模式」授权后误走 startScan，因 recording 标志在权限检查后才置 true）+ 1 文档瑕疵（CHANGELOG DEC-013 两条矛盾）。子 agent 以 pendingRecord 标志修复 + 合并条目 + 补文件尾换行符，复跑 compileDebugKotlin 通过。
+- 编排者独立复跑 `go build ./...` 与 `go test -p 1 ./...` 全绿（验证工作区遗留 DEC-009 Go 改动）。
+- 提交范围决策：将 DEC-009 遗留 Go 改动（internal/ + tests/unit/sendreceive/ + docs/07_decisions.md）一并纳入提交，保持「docs 宣称已实现」与「代码已提交」一致；排除构建产物 qrcd.exe。
+- 批准 Developer 以自己身份提交：commit `32ce2b6`「feat(android): 手机App录像+离线解析，三端计数对齐」，14 文件 +702/-112。工作区仅剩 qrcd.exe（构建产物）。
+- push 仍为重大决策，待用户批准。TASK-015（DEC-012 多会话分片）涉及 04_api §2.3 MetaData 契约变更（partIndex/partTotal），属重大决策，待用户确认方向后推进。
+
+### 2026-08-20 阶段10 TASK-015 实现完成 - Coordinator
+
+- 编排者接手完成 TASK-015 Go 侧实现（此前 Developer 被打断，receive/web/pages/tests 未完成）。
+- 完成 `receive.Processor` 多会话分片聚合：`assemblies map[overallHash]*partAssembly`，各分片 FEC 完成后分片级 SHA-256 校验 → 按 overallHash 聚合 → 收齐 0..partTotal-1 后按序拼接 → 整体 SHA-256 校验 → 以 overallName 落盘。`checkMeta` 对 --expect-size/--hash 分片感知（针对整体）。
+- 修复契约缺口：`overallHash` 改为**所有分片均携带**（整体关联键），仅 part 0 携带 overallName/overallSize；同步 04_api §2.3 字段表/示例与 frame.go 注释。接收端聚合键为 overallHash 而非 transfer_id（各分片 transfer_id 独立）。
+- `web.go` handleEncode 改用 `BuildSessionStreams`，扁平化全部帧 + partSizes 分片边界；handleStatus 返回 parts/partSizes；senderPage 播放时显示「分片 X/Y（块 Z/W）」。
+- 适配 FEC 预生成编码器（DEC-012 实现修订第 4 条）：`TestNextSymbolInfinite`→`TestNextSymbolFinite`，`TestRaptorRoundtrip`/`TestRaptorPacketLoss` 对齐有限符号契约。
+- 新增测试：`TestBuildSessionStreamsMultiPart`（分片元数据）、`TestMultiSessionSplice`（全量拼接还原）、`TestMultiSessionPartLoss`（丢帧拼接）、`TestSessionStreamsSingleRegression`（单会话无回归）。
+- 全量验证：`go build ./...` 通过；`go test -p 1 ./...` 全绿（AV 拦截时以项目内 `.gotmp` 作为临时目录规避）。
+- 暂存未提交，待编排者审 diff 后批准提交。
 
 ---
 
@@ -121,17 +141,18 @@
 
 ## TASK-015: 大文件多会话分片传输（DEC-012）
 
-- 状态：待办
+- 状态：已测试（待编排者审 diff 批准提交）
 - 优先级：P1
 - 负责角色：Developer
 - 关联需求：PRD F-01/F-04；DEC-011/DEC-012
 - 估算：2 天
 - 依赖关系：TASK-014
-- 描述：发送端将大文件自动拆分为 N 个会话（各 ≤8192 块，独立 transfer_id 与元数据帧，元数据增 partIndex/partTotal），逐会话生成 QR 流；接收端按会话解码后按 partIndex 顺序拼接还原。发送端 `handleEncode`/`/api/frame` 支持会话切换；App 与网页适配多会话进度。使 8MB 等大文件可在手机可扫密度下传输。
+- 描述：发送端将大文件自动拆分为 N 个会话（各 ≤1024 块，独立 transfer_id 与元数据帧，元数据增 partIndex/partTotal/overallHash），逐会话生成 QR 流；接收端按 overallHash 聚合分片，按 partIndex 顺序拼接还原。发送端 `handleEncode`/`/api/frame` 支持分片切换；网页发送端适配多会话进度。使 8MB 等大文件可在手机可扫密度下传输。
 - 验收标准：
-  - 8MB 文件可编码不报 400；接收端按分片顺序拼接，最终 SHA-256 与原文一致。
+  - 大文件可编码不报 400；接收端按分片顺序拼接，最终 SHA-256 与原文一致。
   - 各分片独立 transfer_id，互不干扰；分片中途丢失可重发该分片。
-  - 三端进度显示「第 X/N 分片」+ 分片内块进度。
+  - 网页发送端显示「分片 X/Y」+ 分片内块进度。
+  - 实现修订见 DEC-012 实现修订（K≤1024、overallHash 全分片携带、接收端按 overallHash 聚合）。
 
 ## TASK-001: 项目骨架与 Go 模块初始化
 

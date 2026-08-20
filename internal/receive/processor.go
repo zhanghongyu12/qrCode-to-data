@@ -123,17 +123,31 @@ func (fs *fecState) finishDecode() error {
 	return nil
 }
 
+// partAssembly 多会话分片传输的整体聚合状态（DEC-012）。
+// 各分片以独立 transfer_id/独立会话到达，FEC 各自完成后在此按 overallHash 聚合；
+// 收集齐 0..PartTotal-1 全部分片后拼接、整体校验、落盘。
+type partAssembly struct {
+	overallHash string
+	partTotal   int
+	overallName string // 仅 part 0 携带；其余分片到达时若 part 0 未到则为空
+	overallSize int64  // 同上
+	parts       map[int][]byte // partIndex → 解码后的分片数据
+	got         int            // 已收集分片数
+	done        bool
+}
+
 // Processor 接收帧处理器（白盒可测核心）：
 // 逐帧接收字节 → 拆帧（CRC/去重/元数据初始化）→ FEC 解码 → 校验 → 落盘。
 type Processor struct {
 	opts       Options
 	sm         *frame.SessionManager
 	fecStates  map[[16]byte]*fecState
+	assemblies map[string]*partAssembly // overallHash → 分片聚合
 	prog       *progress.Terminal
 	monitor    *progress.Monitor
 	dedupTotal int
 	unique     int
-	expected   int // 期望块数（来自元数据 BlockCount）
+	expected   int // 期望块数（来自元数据 BlockCount/TotalSymbols）
 	result     *Result
 	done       bool
 	mu         sync.Mutex
@@ -148,11 +162,12 @@ func NewProcessor(opts Options) (*Processor, error) {
 		opts.ProgressOut = io.Discard
 	}
 	return &Processor{
-		opts:      opts,
-		sm:        frame.NewSessionManager(),
-		fecStates: make(map[[16]byte]*fecState),
-		prog:      progress.NewTerminal(opts.ProgressOut, opts.Quiet),
-		monitor:   progress.NewMonitor(opts.Timeout),
+		opts:       opts,
+		sm:         frame.NewSessionManager(),
+		fecStates:  make(map[[16]byte]*fecState),
+		assemblies: make(map[string]*partAssembly),
+		prog:       progress.NewTerminal(opts.ProgressOut, opts.Quiet),
+		monitor:    progress.NewMonitor(opts.Timeout),
 	}, nil
 }
 
@@ -275,20 +290,29 @@ func (p *Processor) Close() {
 }
 
 // checkMeta 元数据预校验：--expect-size / --hash 提前检查。
+// 多会话分片时（PartTotal>0），--expect-size / --hash 针对整体文件（OverallSize/OverallHash）。
 func (p *Processor) checkMeta(meta *frame.MetaData) error {
-	if p.opts.ExpectSize > 0 && meta.Size != p.opts.ExpectSize {
-		return fmt.Errorf("%w: 预期大小 %d 与实际 %d 不匹配，请确认发送端", ErrTransfer, p.opts.ExpectSize, meta.Size)
+	expectSize := meta.OverallSize
+	if expectSize == 0 {
+		expectSize = meta.Size
+	}
+	if p.opts.ExpectSize > 0 && expectSize != p.opts.ExpectSize {
+		return fmt.Errorf("%w: 预期大小 %d 与实际 %d 不匹配，请确认发送端", ErrTransfer, p.opts.ExpectSize, expectSize)
+	}
+	wantHash := meta.OverallHash
+	if wantHash == "" {
+		wantHash = meta.Hash
 	}
 	if p.opts.Hash != "" {
 		exp := strings.TrimPrefix(p.opts.Hash, "sha256:")
-		if exp != "" && exp != meta.Hash {
+		if exp != "" && exp != wantHash {
 			return fmt.Errorf("%w: 预期 SHA-256 与元数据不匹配，请确认发送端", ErrTransfer)
 		}
 	}
 	return nil
 }
 
-// complete 校验通过后落盘。
+// complete 校验通过后落盘。多会话分片时聚合分片（DEC-012）。
 func (p *Processor) complete(id [16]byte, fs *fecState, meta *frame.MetaData) error {
 	if p.done {
 		return nil
@@ -297,6 +321,11 @@ func (p *Processor) complete(id [16]byte, fs *fecState, meta *frame.MetaData) er
 	// 发送端补齐到块数整数倍，此处截断到原始大小
 	if int64(len(data)) > meta.Size {
 		data = data[:int(meta.Size)]
+	}
+
+	// 多会话分片：走分片聚合路径，收齐后整体拼接落盘
+	if meta.PartTotal > 0 {
+		return p.completePart(meta, data)
 	}
 
 	if !payload.VerifySHA256(data, meta.Hash) {
@@ -341,6 +370,116 @@ func (p *Processor) complete(id [16]byte, fs *fecState, meta *frame.MetaData) er
 		Dedup:   p.dedupTotal,
 		Done:    true,
 		Message: fmt.Sprintf("接收完成: %s (%d 字节) 校验通过", outPath, len(data)),
+	})
+	return nil
+}
+
+// completePart 多会话分片完成路径（DEC-012）：
+// 分片级 SHA-256 校验 → 按 overallHash 聚合缓存 → 收齐 0..PartTotal-1 后拼接 →
+// 整体 SHA-256 校验 → 以整体文件名落盘。
+func (p *Processor) completePart(meta *frame.MetaData, data []byte) error {
+	if !payload.VerifySHA256(data, meta.Hash) {
+		return fmt.Errorf("%w: 分片 %d/%d SHA-256 校验失败，已丢弃该分片数据，请重新发送",
+			ErrTransfer, meta.PartIndex+1, meta.PartTotal)
+	}
+
+	key := meta.OverallHash
+	if key == "" {
+		return fmt.Errorf("%w: 分片缺少 overallHash 关联键，无法聚合（发送端版本过低？）", ErrTransfer)
+	}
+	as := p.assemblies[key]
+	if as == nil {
+		as = &partAssembly{
+			overallHash: meta.OverallHash,
+			partTotal:   meta.PartTotal,
+			parts:       make(map[int][]byte, meta.PartTotal),
+		}
+		p.assemblies[key] = as
+	}
+	// part 0 或任何分片携带的整体信息都补全（防御：part 0 未先到达）
+	if meta.OverallName != "" {
+		as.overallName = meta.OverallName
+	}
+	if meta.OverallSize > 0 {
+		as.overallSize = meta.OverallSize
+	}
+	if as.done {
+		return nil
+	}
+	if _, exists := as.parts[meta.PartIndex]; exists {
+		return nil // 重复分片，忽略
+	}
+	as.parts[meta.PartIndex] = append([]byte(nil), data...)
+	as.got++
+
+	p.prog.Report(progress.Event{
+		Kind:  progress.Receive,
+		Count: as.got,
+		Total: as.partTotal,
+		Dedup: p.dedupTotal,
+	})
+	if as.got < as.partTotal {
+		p.prog.Finish(progress.Event{
+			Kind:  progress.Receive,
+			Count: as.got,
+			Total: as.partTotal,
+			Dedup: p.dedupTotal,
+			Message: fmt.Sprintf("分片 %d/%d 完成，继续等待剩余分片…", as.got, as.partTotal),
+		})
+		return nil
+	}
+	return p.spliceAssembly(as)
+}
+
+// spliceAssembly 收齐全部分片后拼接、整体校验、落盘。
+func (p *Processor) spliceAssembly(as *partAssembly) error {
+	// 按 partIndex 顺序拼接
+	full := make([]byte, 0, as.overallSize)
+	for i := 0; i < as.partTotal; i++ {
+		part, ok := as.parts[i]
+		if !ok {
+			return fmt.Errorf("%w: 分片 %d/%d 缺失，无法拼接", ErrTransfer, i+1, as.partTotal)
+		}
+		full = append(full, part...)
+	}
+	if as.overallSize > 0 && int64(len(full)) != as.overallSize {
+		return fmt.Errorf("%w: 拼接长度 %d 与整体大小 %d 不一致，请重新发送", ErrTransfer, len(full), as.overallSize)
+	}
+	if !payload.VerifySHA256(full, as.overallHash) {
+		return fmt.Errorf("%w: 整体 SHA-256 校验失败，拼接数据损坏，请重新发送", ErrTransfer)
+	}
+
+	name := as.overallName
+	if name == "" {
+		name = fmt.Sprintf("%s.assembled", as.overallHash[:12])
+	}
+	outPath, err := payload.OutputPath(p.opts.Output, name)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrEnv, err)
+	}
+	if err := payload.WriteFile(outPath, full, payload.WriteOptions{
+		Overwrite:    p.opts.Overwrite,
+		VerifySHA256: as.overallHash,
+	}); err != nil {
+		return fmt.Errorf("%w: %v", ErrEnv, err)
+	}
+
+	p.result = &Result{
+		OutputPath: outPath,
+		Name:       name,
+		Size:       int64(len(full)),
+		SHA256:     as.overallHash,
+	}
+	p.done = true
+	as.done = true
+
+	p.prog.Finish(progress.Event{
+		Kind:  progress.Receive,
+		Count: p.unique,
+		Total: p.expected,
+		Dedup: p.dedupTotal,
+		Done:  true,
+		Message: fmt.Sprintf("接收完成: %s (%d 字节) 多分片拼接校验通过", outPath, len(full)),
 	})
 	return nil
 }

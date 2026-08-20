@@ -492,3 +492,211 @@ func TestReceiveNoFrames(t *testing.T) {
 		t.Fatal("无符号时 Finish 应报错")
 	}
 }
+
+// collectSessionStreams 构建多会话分片流（DEC-012），返回 streams 与每分片帧字节。
+func collectSessionStreams(t *testing.T, data []byte, opts send.Options) ([]*send.Stream, [][][]byte) {
+	t.Helper()
+	load := &payload.Load{Data: data, Name: "big.bin", PayloadType: "file", MimeType: "application/octet-stream"}
+	streams, err := send.BuildSessionStreams(load, opts)
+	if err != nil {
+		t.Fatalf("BuildSessionStreams 失败: %v", err)
+	}
+	frames := make([][][]byte, len(streams))
+	for i, st := range streams {
+		for {
+			item, ok := st.Next()
+			if !ok {
+				break
+			}
+			frames[i] = append(frames[i], item.Bytes)
+		}
+	}
+	return streams, frames
+}
+
+// multiPartData 生成一个确定性的、足以触发多会话分片的数据块。
+// MaxSymbol=151 → partSize = 1024×151 ≈ 154KB，300KB → 2 个会话。
+func multiPartData() []byte {
+	data := make([]byte, 300*1024)
+	for i := range data {
+		data[i] = byte(i*31 + i>>8)
+	}
+	return data
+}
+
+// TestBuildSessionStreamsMultiPart 多会话分片元数据正确：
+// 所有分片携带统一 overallHash 作为关联键；仅 part 0 携带 overallName/overallSize；
+// 各分片 PartIndex/PartTotal 正确；分片数据按序拼接等于原文。
+func TestBuildSessionStreamsMultiPart(t *testing.T) {
+	data := multiPartData()
+	opts := send.Options{BlockSize: 1024, Version: 20, ECC: "L", Redundancy: 0.1, MaxSymbol: 151}
+	streams, _ := collectSessionStreams(t, data, opts)
+
+	if len(streams) < 2 {
+		t.Fatalf("300KB 应拆为 ≥2 个会话，实际 %d", len(streams))
+	}
+	overallHash := streams[0].Meta().OverallHash
+	if overallHash == "" {
+		t.Fatal("part 0 应携带 overallHash")
+	}
+	for i, st := range streams {
+		m := st.Meta()
+		if m.PartIndex != i {
+			t.Errorf("分片 %d PartIndex=%d，应=%d", i, m.PartIndex, i)
+		}
+		if m.PartTotal != len(streams) {
+			t.Errorf("分片 %d PartTotal=%d，应=%d", i, m.PartTotal, len(streams))
+		}
+		if m.OverallHash != overallHash {
+			t.Errorf("分片 %d overallHash 应统一（整体关联键）: %s vs %s", i, m.OverallHash, overallHash)
+		}
+		if m.OverallSize > 0 && int64(m.OverallSize) != int64(len(data)) {
+			t.Errorf("分片 %d overallSize=%d，应=%d", i, m.OverallSize, len(data))
+		}
+		if i == 0 {
+			if m.OverallName != "big.bin" {
+				t.Errorf("part 0 overallName=%q，应=big.bin", m.OverallName)
+			}
+			if m.OverallSize != int64(len(data)) {
+				t.Errorf("part 0 overallSize=%d，应=%d", m.OverallSize, len(data))
+			}
+		} else if m.OverallName != "" || m.OverallSize != 0 {
+			t.Errorf("非 part0 不应携带 overallName/overallSize: %+v", m)
+		}
+		// 分片名带 .partN 标记，避免与整体名冲突
+		if !strings.Contains(m.Name, ".part") {
+			t.Errorf("分片 %d name=%q，应含 .part 标记", i, m.Name)
+		}
+	}
+}
+
+// TestMultiSessionSplice 多会话分片全量收发：所有分片帧按序喂入同一接收处理器，
+// 收齐后拼接、整体校验、以整体文件名落盘，还原逐字节一致。
+func TestMultiSessionSplice(t *testing.T) {
+	data := multiPartData()
+	opts := send.Options{BlockSize: 1024, Version: 20, ECC: "L", Redundancy: 0.1, MaxSymbol: 151}
+	_, frames := collectSessionStreams(t, data, opts)
+
+	outDir := t.TempDir()
+	proc := newTestProcessor(t, outDir, nil)
+	var res *receive.Result
+	for pi, partFrames := range frames {
+		for _, fb := range partFrames {
+			if err := proc.Process(fb); err != nil {
+				t.Fatalf("Process 分片 %d 帧失败: %v", pi, err)
+			}
+			if proc.Done() {
+				break
+			}
+		}
+		if proc.Done() {
+			break
+		}
+	}
+	res, err := proc.Finish()
+	if err != nil {
+		t.Fatalf("Finish 失败: %v", err)
+	}
+	if res.Name != "big.bin" {
+		t.Errorf("整体文件名应还原为 big.bin，实际 %q", res.Name)
+	}
+	if res.SHA256 != payload.SHA256Hex(data) {
+		t.Errorf("整体 SHA-256 不一致: %s vs %s", res.SHA256, payload.SHA256Hex(data))
+	}
+	if res.Size != int64(len(data)) {
+		t.Errorf("整体大小不一致: %d vs %d", res.Size, len(data))
+	}
+	got, err := os.ReadFile(res.OutputPath)
+	if err != nil {
+		t.Fatalf("读取还原文件失败: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Errorf("多会话分片还原数据与原文不一致\n原文长度: %d, 还原长度: %d", len(data), len(got))
+	}
+	// 不应残留 .part 中间产物文件名
+	if strings.Contains(filepath.Base(res.OutputPath), ".part") {
+		t.Errorf("整体输出文件名不应含 .part 分片标记: %s", res.OutputPath)
+	}
+}
+
+// TestMultiSessionPartLoss 多会话分片丢帧：每分片丢 20% 数据帧，仍能逐分片还原并整体拼接。
+func TestMultiSessionPartLoss(t *testing.T) {
+	data := multiPartData()
+	opts := send.Options{BlockSize: 1024, Version: 20, ECC: "L", Redundancy: 0.5, MaxSymbol: 151}
+	_, frames := collectSessionStreams(t, data, opts)
+
+	var kept [][][]byte
+	dropped := 0
+	for _, partFrames := range frames {
+		var pf [][]byte
+		total := 0
+		for _, fb := range partFrames {
+			isData := !strings.HasPrefix(string(fb), "QRCD\x01\x01")
+			if isData {
+				total++
+				if total%5 == 4 {
+					dropped++
+					continue
+				}
+			}
+			pf = append(pf, fb)
+		}
+		kept = append(kept, pf)
+	}
+	if dropped < 20 {
+		t.Fatalf("丢帧数过少: %d", dropped)
+	}
+
+	outDir := t.TempDir()
+	proc := newTestProcessor(t, outDir, nil)
+	var res *receive.Result
+	for pi, partFrames := range kept {
+		for _, fb := range partFrames {
+			if err := proc.Process(fb); err != nil {
+				t.Fatalf("Process 分片 %d 帧失败: %v", pi, err)
+			}
+			if proc.Done() {
+				break
+			}
+		}
+		if proc.Done() {
+			break
+		}
+	}
+	res, err := proc.Finish()
+	if err != nil {
+		t.Fatalf("Finish 失败: %v", err)
+	}
+	got, err := os.ReadFile(res.OutputPath)
+	if err != nil {
+		t.Fatalf("读取还原文件失败: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Errorf("多会话分片丢帧还原不一致\n原文长度: %d, 还原长度: %d, 丢帧: %d", len(data), len(got), dropped)
+	}
+}
+
+// TestSessionStreamsSingleRegression 小文件 BuildSessionStreams 退化为单会话，
+// 不携带分片元数据，且还原路径与 BuildStream 一致（无回归）。
+func TestSessionStreamsSingleRegression(t *testing.T) {
+	data := bytes.Repeat([]byte("SINGLE-SESSION!"), 128) // 2048 字节
+	opts := send.Options{BlockSize: 1024, Version: 20, ECC: "L", Redundancy: 0.1}
+	streams, frames := collectSessionStreams(t, data, opts)
+	if len(streams) != 1 {
+		t.Fatalf("小文件应单会话，实际 %d", len(streams))
+	}
+	m := streams[0].Meta()
+	if m.PartTotal != 0 || m.PartIndex != 0 || m.OverallHash != "" || m.OverallName != "" {
+		t.Errorf("单会话不应携带分片元数据: %+v", m)
+	}
+	outDir := t.TempDir()
+	proc := newTestProcessor(t, outDir, nil)
+	res := feedAll(t, proc, frames[0])
+	got, err := os.ReadFile(res.OutputPath)
+	if err != nil {
+		t.Fatalf("读取还原文件失败: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Errorf("单会话退化还原不一致\n原文长度: %d, 还原长度: %d", len(data), len(got))
+	}
+}

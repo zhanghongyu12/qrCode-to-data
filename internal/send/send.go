@@ -78,19 +78,32 @@ func Send(ctx context.Context, opts Options) (*Result, error) {
 		fmt.Fprintln(os.Stderr, "提示: 文本超过 200 字节，自动切换为二维码帧流传输。")
 	}
 
-	stream, err := BuildStream(load, opts)
+	streams, err := BuildSessionStreams(load, opts)
 	if err != nil {
 		return nil, err
 	}
 
-	// 载荷过大提示预估时长
-	estSec := float64(stream.TotalData()) / float64(opts.FPS)
-	if estSec > 30 {
-		fmt.Fprintf(os.Stderr, "提示: 预计播放约 %.0f 秒（%d 帧），如需加速可提高 --fps、增大 --version 或减小 --block-size；同网直传将在 Phase 2 提供。\n",
-			estSec, stream.TotalData())
+	if len(streams) == 1 {
+		// 单会话：保持原行为与提示
+		estSec := float64(streams[0].TotalData()) / float64(opts.FPS)
+		if estSec > 30 {
+			fmt.Fprintf(os.Stderr, "提示: 预计播放约 %.0f 秒（%d 帧），如需加速可提高 --fps、增大 --version 或减小 --block-size；同网直传将在 Phase 2 提供。\n",
+				estSec, streams[0].TotalData())
+		}
+		return play(ctx, streams[0], opts, "")
 	}
 
-	return play(ctx, stream, opts)
+	// 多会话分片（DEC-012）：大文件自动拆为 N 个独立传输会话，逐会话播放
+	totalData := 0
+	for _, st := range streams {
+		totalData += st.TotalData()
+	}
+	estSec := float64(totalData) / float64(opts.FPS)
+	if estSec > 30 {
+		fmt.Fprintf(os.Stderr, "提示: 数据较大，已自动拆分为 %d 个会话发送（各会话源块 ≤ %d），预计播放约 %.0f 秒（%d 帧）。可提高 --fps 或 --max-symbol 加速。\n",
+			len(streams), maxSourceK, estSec, totalData)
+	}
+	return playSessions(ctx, streams, opts)
 }
 
 // loadPayload 读取文件或文本载荷。
@@ -146,7 +159,9 @@ func sendShortText(opts Options, load *payload.Load) (*Result, error) {
 }
 
 // play 逐帧编码 QR 并渲染播放。
-func play(ctx context.Context, stream *Stream, opts Options) (*Result, error) {
+// label 非空时用于多会话分片（如 "会话 1/4"），完成消息带会话前缀、不重复打印分片 SHA-256；
+// 单会话传 "" 保持原输出。
+func play(ctx context.Context, stream *Stream, opts Options, label string) (*Result, error) {
 	ph := progress.NewTerminal(opts.ProgressOut, opts.Quiet)
 	defer ph.Close()
 
@@ -212,14 +227,18 @@ func play(ctx context.Context, stream *Stream, opts Options) (*Result, error) {
 	if opts.Out != nil {
 		fmt.Fprint(opts.Out, qrcode.ANSICursorShow)
 	}
+	msg := fmt.Sprintf("发送完成: %d 帧", dataCount)
+	if label != "" {
+		msg = fmt.Sprintf("%s 发送完成: %d 帧", label, dataCount)
+	}
 	ph.Finish(progress.Event{
 		Kind:    progress.Send,
 		Count:   dataCount,
 		Total:   stream.TotalData(),
 		Done:    true,
-		Message: fmt.Sprintf("发送完成: %d 帧", dataCount),
+		Message: msg,
 	})
-	if opts.ProgressOut != nil {
+	if opts.ProgressOut != nil && label == "" {
 		fmt.Fprintf(opts.ProgressOut, "SHA-256: %s\n", stream.Meta().Hash)
 	}
 
@@ -230,6 +249,33 @@ func play(ctx context.Context, stream *Stream, opts Options) (*Result, error) {
 		PayloadType: stream.Meta().PayloadType,
 		Frames:      dataCount,
 	}, nil
+}
+
+// playSessions 多会话分片发送：逐会话播放，返回整体结果（拼接后文件信息）。
+func playSessions(ctx context.Context, streams []*Stream, opts Options) (*Result, error) {
+	totalFrames := 0
+	for i, st := range streams {
+		r, err := play(ctx, st, opts, fmt.Sprintf("会话 %d/%d", i+1, len(streams)))
+		if err != nil {
+			return nil, err
+		}
+		totalFrames += r.Frames
+	}
+
+	m0 := streams[0].Meta()
+	res := &Result{
+		Name:        m0.OverallName,
+		Size:        m0.OverallSize,
+		SHA256:      m0.OverallHash,
+		PayloadType: m0.PayloadType,
+		Frames:      totalFrames,
+	}
+	if opts.ProgressOut != nil {
+		fmt.Fprintf(opts.ProgressOut, "整体 SHA-256: %s\n", res.SHA256)
+		fmt.Fprintf(opts.ProgressOut, "传输完成: 共 %d 帧、%d 个会话，接收端将拼接为 %s（%d 字节）\n",
+			totalFrames, len(streams), res.Name, res.Size)
+	}
+	return res, nil
 }
 
 func stopPlayback(opts Options) {

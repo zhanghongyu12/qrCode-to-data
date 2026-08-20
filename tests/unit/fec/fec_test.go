@@ -8,6 +8,12 @@ import (
 	"qrcd/internal/fec"
 )
 
+// raptrSym 编码符号（id + 数据）。
+type raptrSym struct {
+	id   uint32
+	data []byte
+}
+
 // TestRaptorRoundtrip 测试 Raptor 乱序 + 去重投喂 ≥ 阈值符号后还原
 func TestRaptorRoundtrip(t *testing.T) {
 	// 使用能被 sourceSymbols 整除的数据大小，简化测试
@@ -21,51 +27,29 @@ func TestRaptorRoundtrip(t *testing.T) {
 		t.Fatalf("NewEncoder 失败: %v", err)
 	}
 
-	// 收集足够多的符号（含冗余）
-	symbols := make(map[uint32][]byte)
-	for i := 0; i < sourceSymbols+2; i++ {
-		id, sym := enc.NextSymbol()
-		if sym == nil {
-			t.Fatal("NextSymbol 返回 nil 符号")
+	// 收集全部编码符号（预生成含冗余，耗尽后返回 nil）
+	var symbols []raptrSym
+	for {
+		id, s := enc.NextSymbol()
+		if s == nil {
+			break
 		}
-		symbols[id] = sym
+		symbols = append(symbols, raptrSym{id: id, data: s})
+	}
+	if len(symbols) < sourceSymbols {
+		t.Fatalf("编码符号数 %d 少于源符号数 %d", len(symbols), sourceSymbols)
 	}
 
 	// 创建解码器
 	dec := codec.NewDecoder(sourceSymbols, len(data))
 
 	// 乱序投喂（反序）
-	ids := make([]uint32, 0, len(symbols))
-	for id := range symbols {
-		ids = append(ids, id)
-	}
-
-	// 反序投喂
 	done := false
-	for i := len(ids) - 1; i >= 0; i-- {
-		id := ids[i]
+	for i := len(symbols) - 1; i >= 0 && !done; i-- {
 		var err error
-		done, err = dec.AddSymbol(id, symbols[id])
+		done, err = dec.AddSymbol(symbols[i].id, symbols[i].data)
 		if err != nil {
 			t.Fatalf("AddSymbol 失败: %v", err)
-		}
-		if done {
-			break
-		}
-	}
-
-	if !done {
-		// 继续投喂更多符号
-		for i := 0; i < sourceSymbols*2; i++ {
-			id, sym := enc.NextSymbol()
-			var err error
-			done, err = dec.AddSymbol(id, sym)
-			if err != nil {
-				t.Fatalf("AddSymbol 失败: %v", err)
-			}
-			if done {
-				break
-			}
 		}
 	}
 
@@ -106,21 +90,21 @@ func TestRaptorPacketLoss(t *testing.T) {
 	blockSize := (len(data) + sourceSymbols - 1) / sourceSymbols
 
 	codec := fec.NewRaptorCodec(sourceSymbols)
-	enc, err := codec.NewEncoder(data, blockSize, 0.1)
+	// 预生成全部编码符号：redundancy=1.4 → 50 + ceil(70) = 120 个（2.4 倍冗余）
+	enc, err := codec.NewEncoder(data, blockSize, 1.4)
 	if err != nil {
 		t.Fatalf("NewEncoder 失败: %v", err)
 	}
 
 	// 生成 120 个符号（2.4 倍冗余）
 	totalSymbols := 120
-	type sym struct {
-		id  uint32
-		sym []byte
-	}
-	symbols := make([]sym, 0, totalSymbols)
+	symbols := make([]raptrSym, 0, totalSymbols)
 	for i := 0; i < totalSymbols; i++ {
 		id, s := enc.NextSymbol()
-		symbols = append(symbols, sym{id, s})
+		if s == nil {
+			t.Fatalf("第 %d 次 NextSymbol 返回 nil（应预生成 120 个符号）", i)
+		}
+		symbols = append(symbols, raptrSym{id: id, data: s})
 	}
 
 	// 确定性随机丢弃约 20%（24 个），保留 96 个
@@ -131,7 +115,7 @@ func TestRaptorPacketLoss(t *testing.T) {
 	dec := codec.NewDecoder(sourceSymbols, len(data))
 	done := false
 	for _, s := range keep {
-		done, err = dec.AddSymbol(s.id, s.sym)
+		done, err = dec.AddSymbol(s.id, s.data)
 		if err != nil {
 			t.Fatalf("AddSymbol 失败: %v", err)
 		}
@@ -243,28 +227,46 @@ func TestScheme(t *testing.T) {
 	}
 }
 
-// TestNextSymbolInfinite 测试 NextSymbol 可无限产出且 id 递增
-func TestNextSymbolInfinite(t *testing.T) {
-	data := []byte("test data for infinite symbol generation")
-	codec := fec.NewRaptorCodec(4)
-	enc, err := codec.NewEncoder(data, 16, 0.1)
+// TestNextSymbolFinite 测试 Raptor NextSymbol 预生成符号（含冗余）序列：
+// 恰好产出 K + ceil(redundancy·K) 个非空符号且 id 从 0 连续递增，耗尽后返回 nil。
+// 这与发送端 totalData 一致（见 send/stream.go），stream 靠 nil 终止。
+func TestNextSymbolFinite(t *testing.T) {
+	data := []byte("test data for finite symbol generation")
+	sourceSymbols := 8
+	redundancy := 0.25
+	codec := fec.NewRaptorCodec(sourceSymbols)
+	enc, err := codec.NewEncoder(data, 16, redundancy)
 	if err != nil {
 		t.Fatalf("NewEncoder 失败: %v", err)
 	}
 
-	prevID := uint32(0)
-	hasPrev := false
-	for i := 0; i < 20; i++ {
+	expected := sourceSymbols + int(ceil(redundancy*float64(sourceSymbols)))
+	for i := 0; i < expected; i++ {
 		id, sym := enc.NextSymbol()
 		if sym == nil || len(sym) == 0 {
-			t.Errorf("NextSymbol 第 %d 次返回空符号", i)
+			t.Fatalf("NextSymbol 第 %d 次（共 %d）应返回非空符号", i, expected)
 		}
-		if hasPrev && id != prevID+1 {
-			t.Errorf("NextSymbol id 应递增: prev=%d, current=%d", prevID, id)
+		if id != uint32(i) {
+			t.Errorf("NextSymbol 第 %d 次 id=%d，应从 0 连续递增", i, id)
 		}
-		prevID = id
-		hasPrev = true
 	}
+	// 耗尽后返回 nil，且 id 停在末位（发送端以此为流终止信号）
+	id, sym := enc.NextSymbol()
+	if sym != nil {
+		t.Errorf("耗尽后 NextSymbol 应返回 nil，实际 %d 字节", len(sym))
+	}
+	if id != uint32(expected) {
+		t.Errorf("耗尽后 id 应停在 %d，实际 %d", expected, id)
+	}
+}
+
+// ceil 整数上取整（测试辅助，避免引入 math 包）。
+func ceil(f float64) int {
+	i := int(f)
+	if float64(i) < f {
+		return i + 1
+	}
+	return i
 }
 
 // TestReceived 测试 Received() 正确统计不重复符号数
