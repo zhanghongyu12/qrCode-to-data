@@ -27,12 +27,13 @@ func TestRaptorRoundtrip(t *testing.T) {
 		t.Fatalf("NewEncoder 失败: %v", err)
 	}
 
-	// 收集全部编码符号（预生成含冗余，耗尽后返回 nil）
+	// 收集编码符号：预生成批次（K + ceil(red·K)）耗尽后 Raptor 仍可无限产出，
+	// 故用固定次数收集（2K 个，覆盖预生成 + 按需生成两条路径）。
 	var symbols []raptrSym
-	for {
+	for i := 0; i < sourceSymbols*2; i++ {
 		id, s := enc.NextSymbol()
 		if s == nil {
-			break
+			t.Fatalf("NextSymbol 第 %d 次返回 nil（Raptor 应可无限产出冗余符号）", i)
 		}
 		symbols = append(symbols, raptrSym{id: id, data: s})
 	}
@@ -227,11 +228,13 @@ func TestScheme(t *testing.T) {
 	}
 }
 
-// TestNextSymbolFinite 测试 Raptor NextSymbol 预生成符号（含冗余）序列：
-// 恰好产出 K + ceil(redundancy·K) 个非空符号且 id 从 0 连续递增，耗尽后返回 nil。
-// 这与发送端 totalData 一致（见 send/stream.go），stream 靠 nil 终止。
-func TestNextSymbolFinite(t *testing.T) {
-	data := []byte("test data for finite symbol generation")
+// TestNextSymbolInfinite 测试 Raptor NextSymbol 预生成符号序列与无限冗余语义：
+//  1. 预生成批次（K + ceil(redundancy·K) 个）内符号非空且 id 从 0 连续递增；
+//  2. 超出预生成批次后仍按需产出新符号（可无限产出冗余符号，不返回 nil），
+//     与 04_api §3「可无限产出冗余符号」契约一致。发送端靠 totalData 计数终止
+//     （见 send/stream.go），不依赖 nil。
+func TestNextSymbolInfinite(t *testing.T) {
+	data := []byte("test data for infinite symbol generation")
 	sourceSymbols := 8
 	redundancy := 0.25
 	codec := fec.NewRaptorCodec(sourceSymbols)
@@ -240,23 +243,26 @@ func TestNextSymbolFinite(t *testing.T) {
 		t.Fatalf("NewEncoder 失败: %v", err)
 	}
 
-	expected := sourceSymbols + int(ceil(redundancy*float64(sourceSymbols)))
-	for i := 0; i < expected; i++ {
+	// 预生成批次：K + ceil(red·K) = 8 + 2 = 10 个，符号非空且 id 连续递增
+	pregen := sourceSymbols + int(ceil(redundancy*float64(sourceSymbols)))
+	for i := 0; i < pregen; i++ {
 		id, sym := enc.NextSymbol()
 		if sym == nil || len(sym) == 0 {
-			t.Fatalf("NextSymbol 第 %d 次（共 %d）应返回非空符号", i, expected)
+			t.Fatalf("NextSymbol 第 %d 次（共预生成 %d）应返回非空符号", i, pregen)
 		}
 		if id != uint32(i) {
 			t.Errorf("NextSymbol 第 %d 次 id=%d，应从 0 连续递增", i, id)
 		}
 	}
-	// 耗尽后返回 nil，且 id 停在末位（发送端以此为流终止信号）
-	id, sym := enc.NextSymbol()
-	if sym != nil {
-		t.Errorf("耗尽后 NextSymbol 应返回 nil，实际 %d 字节", len(sym))
-	}
-	if id != uint32(expected) {
-		t.Errorf("耗尽后 id 应停在 %d，实际 %d", expected, id)
+	// 超出预生成批次：继续按需产出新符号（无限冗余），不返回 nil
+	for i := 0; i < 8; i++ {
+		id, sym := enc.NextSymbol()
+		if sym == nil || len(sym) == 0 {
+			t.Fatalf("超出预生成批次后 NextSymbol 第 %d 次返回 nil（应可无限产出冗余符号）", i)
+		}
+		if id != uint32(pregen+i) {
+			t.Errorf("按需生成符号 id 应为 %d，实际 %d", pregen+i, id)
+		}
 	}
 }
 

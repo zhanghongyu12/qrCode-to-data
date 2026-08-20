@@ -55,8 +55,15 @@ func (c *raptorCodecImpl) NewEncoder(data []byte, blockSize int, redundancy floa
 	fc := fountain.NewRaptorCodec(sourceSymbols, 4)
 	blocks := fountain.EncodeLTBlocks(src, ids, fc)
 
+	// 另存原始数据副本：按需生成时 EncodeLTBlocks 仍会破坏性修改入参，
+	// 且不能假设调用方不修改 data，须从干净副本重建中间块。
+	encData := make([]byte, len(data))
+	copy(encData, data)
+
 	return &raptorEncoderImpl{
 		sourceSymbols: sourceSymbols,
+		data:          encData,
+		fc:            fc,
 		symbols:       blocks,
 	}, nil
 }
@@ -66,7 +73,7 @@ func (c *raptorCodecImpl) NewEncoder(data []byte, blockSize int, redundancy floa
 func (c *raptorCodecImpl) NewDecoder(sourceSymbols int, messageLength int) Decoder {
 	fc := fountain.NewRaptorCodec(sourceSymbols, 4)
 	return &raptorDecoderImpl{
-		messageLength:  messageLength,
+		messageLength: messageLength,
 		sourceSymbols: sourceSymbols,
 		received:      make(map[uint32]bool),
 		fc:            fc,
@@ -75,10 +82,13 @@ func (c *raptorCodecImpl) NewDecoder(sourceSymbols int, messageLength int) Decod
 }
 
 // raptorEncoderImpl Raptor 编码器实现。
-// 预生成全部编码符号（含冗余），逐符号顺序返回，避免每次调用都重建 O(K²) 中间块。
+// 预生成 K+冗余 个编码符号（避免 O(K³) 逐符号代价），
+// 耗尽后按需生成新符号（单次 O(K²)），保证可无限产出冗余符号。
 type raptorEncoderImpl struct {
 	sourceSymbols int
-	symbols       []fountain.LTBlock
+	data          []byte             // 原始数据副本（用于后续按需生成新符号）
+	fc            fountain.Codec     // 喷泉码编解码器（用于后续按需生成新符号）
+	symbols       []fountain.LTBlock // 预生成的首批符号
 	nextID        uint32
 }
 
@@ -87,12 +97,24 @@ func (e *raptorEncoderImpl) SourceSymbols() int {
 	return e.sourceSymbols
 }
 
-// NextSymbol 返回下一个编码符号；耗尽后返回 nil 表示结束。
+// NextSymbol 返回下一个编码符号（含符号 id），可无限产出冗余符号。
+// 预生成符号耗尽后自动按需生成新符号，保证调用方始终能获得新符号。
 func (e *raptorEncoderImpl) NextSymbol() (uint32, []byte) {
-	if int(e.nextID) >= len(e.symbols) {
+	if int(e.nextID) < len(e.symbols) {
+		b := e.symbols[e.nextID]
+		e.nextID++
+		return uint32(b.BlockCode), b.Data
+	}
+	// 预生成符号耗尽：按需生成一个新符号。
+	// EncodeLTBlocks 破坏性修改入参，传入副本。
+	src := make([]byte, len(e.data))
+	copy(src, e.data)
+	ids := []int64{int64(e.nextID)}
+	blocks := fountain.EncodeLTBlocks(src, ids, e.fc)
+	if len(blocks) == 0 {
 		return e.nextID, nil
 	}
-	b := e.symbols[e.nextID]
+	b := blocks[0]
 	e.nextID++
 	return uint32(b.BlockCode), b.Data
 }
@@ -100,7 +122,7 @@ func (e *raptorEncoderImpl) NextSymbol() (uint32, []byte) {
 // raptorDecoderImpl Raptor 解码器实现
 // 延迟创建 gofountain decoder，需要从收到的符号中推断 messageLength
 type raptorDecoderImpl struct {
-	messageLength  int
+	messageLength int
 	sourceSymbols int
 	received      map[uint32]bool
 	fc            fountain.Codec

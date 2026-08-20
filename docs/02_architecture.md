@@ -141,7 +141,7 @@ cmd/qrcd
 文件/文本
   → payload 分块（blockSize，默认 1024B）
   → 计算整体 SHA-256（写入元数据帧）
-  → 自动分片：大文件拆为 N 个会话（各 ≤8192 块，独立 transfer_id，见 DEC-012）
+  → 自动分片：大文件拆为 N 个会话（各 ≤1024 块，独立 transfer_id，见 DEC-012）
   → 逐会话 fec 编码（每源块 → K 个源符号；Raptor 生成带冗余编码符号，编号 id 递增）
   → frame 组帧：
       ① 元数据帧（type=0x01：文件名/大小/源块数/哈希/FEC 参数/分片序号 partIndex/partTotal）

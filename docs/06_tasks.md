@@ -90,7 +90,7 @@
 - **DEC-008 MaxSymbol 限制 QR 密度**：原 v15 数据帧约 v20（97×97）过密，手机扫不到。新增 `send.Options.MaxSymbol`，Web 端固定 151（数据帧 v12 Q，65×65），手机稳定可扫。元数据帧用 `Version: 40`（auto-select min）解决长文件名超 v15 Q 容量报 500。
 - **DEC-010 dedupKey 整帧哈希修复**：早期 dedupKey 仅哈希前 16 字节+长度，而所有数据帧前 16 字节（magic+version+type+flags+transfer_id 前 8B）相同且等长 → 除首帧外全被去重丢弃，手机只捕获 2 块。改整帧哈希后修复，文件传输跑通（SHA-256 校验通过）。
 - **DEC-009 三端计数对齐**：用户反馈「发送端 95 / 手机 91 / 接收端 72 对不上」。根因为喷泉码凑齐 K 即 done、之后符号被丢弃，unique 停在 K。新增 `MetaData.TotalSymbols`（含冗余），接收端进度基准改用之，done 后继续累计；手机端只对数据帧计数；发送端显示数据符号数。验证：`go run` 探针 frames=26 symbols=24 K=19，完成时已收=19/total=24，喂完全部已收=24，校验通过。新增 `TestPostDecodeCounting` 单测。全量 `go test -p 1 ./...` 全绿。
-- **DEC-011 大文件约束定位**：用户传 8MB 文件报 400。根因：MaxSymbol=151 下 8MB 需 ~55000 块，远超 Raptor 单会话 K≤8192 上限；即使 v20 L（822B/帧）仍需 ~10200 块。此为「手机可扫密度」与「喷泉码单会话容量」内在矛盾，非 bug。已向用户说明，用户确认要做成支持大数据慢传 + 手机端录像离线解析。
+- **DEC-011 大文件约束定位**：用户传 8MB 文件报 400。根因：MaxSymbol=151 下 8MB 需 ~55000 块，远超 Raptor 单会话 K 上限（当时评估 8192，DEC-012 实现修订后定稿 K≤1024）；即使 v20 L（822B/帧）仍需 ~10200 块。此为「手机可扫密度」与「喷泉码单会话容量」内在矛盾，非 bug。已向用户说明，用户确认要做成支持大数据慢传 + 手机端录像离线解析。
 - **DEC-013（提议）录像+视频离线解析**：用户提出「手机端识别视频，录一遍后慢慢解析」，将扫描与解码解耦——发送端可高速播放（手机录像不怕漏帧）、可多录几遍做冗余、可离线慢解析。已在进行：布局加「录像模式」按钮，build.gradle 加 camera-video 1.3.4，manifest 加 RECORD_AUDIO 权限；MainActivity 录像+视频解析逻辑实现中（被打断，未完成）。
 - **DEC-012（已确认+实现修订）多会话分片**：配套录像方案让 8MB 真正跑通。Go 侧已实现：发送端 `BuildSessionStreams` 自动拆片（各分片独立 transfer_id，单会话 K≤1024），接收端按 overallHash 聚合、按 partIndex 拼接、整体 SHA-256 校验后以整体名落盘；网页发送端显示「分片 X/Y」。实现修订（K≤1024、overallHash 全分片携带）见 DEC-012 实现修订节。
 - 测试：本轮新增逻辑均经 `go test -p 1 ./...` 全绿验证；真机已验证文件传输跑通且三端计数对齐；8MB 大文件待 DEC-012/DEC-013 实现后验证。
@@ -122,7 +122,7 @@
 - 完成 `receive.Processor` 多会话分片聚合：`assemblies map[overallHash]*partAssembly`，各分片 FEC 完成后分片级 SHA-256 校验 → 按 overallHash 聚合 → 收齐 0..partTotal-1 后按序拼接 → 整体 SHA-256 校验 → 以 overallName 落盘。`checkMeta` 对 --expect-size/--hash 分片感知（针对整体）。
 - 修复契约缺口：`overallHash` 改为**所有分片均携带**（整体关联键），仅 part 0 携带 overallName/overallSize；同步 04_api §2.3 字段表/示例与 frame.go 注释。接收端聚合键为 overallHash 而非 transfer_id（各分片 transfer_id 独立）。
 - `web.go` handleEncode 改用 `BuildSessionStreams`，扁平化全部帧 + partSizes 分片边界；handleStatus 返回 parts/partSizes；senderPage 播放时显示「分片 X/Y（块 Z/W）」。
-- 适配 FEC 预生成编码器（DEC-012 实现修订第 4 条）：`TestNextSymbolInfinite`→`TestNextSymbolFinite`，`TestRaptorRoundtrip`/`TestRaptorPacketLoss` 对齐有限符号契约。
+- 适配 FEC 预生成编码器（DEC-012 实现修订第 4 条）：`TestNextSymbolFinite`→`TestNextSymbolInfinite`（保留可无限产出冗余符号语义），`TestRaptorRoundtrip` 改为固定次数收集（NextSymbol 不再返回 nil），`TestRaptorPacketLoss` 保持固定 120 符号不变。
 - 新增测试：`TestBuildSessionStreamsMultiPart`（分片元数据）、`TestMultiSessionSplice`（全量拼接还原）、`TestMultiSessionPartLoss`（丢帧拼接）、`TestSessionStreamsSingleRegression`（单会话无回归）。
 - 全量验证：`go build ./...` 通过；`go test -p 1 ./...` 全绿（AV 拦截时以项目内 `.gotmp` 作为临时目录规避）。
 - 暂存未提交，待编排者审 diff 后批准提交。

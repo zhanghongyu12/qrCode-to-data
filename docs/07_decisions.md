@@ -174,7 +174,7 @@
 - 影响：
   - `internal/send/send.go` Options 增 `MaxSymbol` 字段；`stream.go` BuildStream 用 dataMax 限制符号大小。
   - 元数据帧因文件名长度可变，单独 `Version: 40`（auto-select min），此前用 v15 时长文件名超容报 500。
-  - 单帧载荷变小 → 大文件块数激增，与 DEC-011（Raptor K≤8192 上限）冲突，需 DEC-012 多会话分片解决。
+  - 单帧载荷变小 → 大文件块数激增，与 DEC-011（Raptor 单会话 K 上限，实现修订后取 K≤1024）冲突，需 DEC-012 多会话分片解决。
 - 替代方案：
   - 保持高密度 v20：实机扫码失败，不可行。
   - 动态探测手机能力自适应版本：实现复杂且无可靠探测手段。
@@ -221,36 +221,37 @@
 
 ---
 
-## DEC-011: Raptor 单会话 K≤8192 上限与 QR 单帧容量的内在约束
+## DEC-011: Raptor 单会话 K 上限与 QR 单帧容量的内在约束（gofountain 实现 K≤1024）
 
-- 日期：2026-08-17
-- 决定：记录（非新增实现）喷泉码单会话源块数上限约束：gofountain Raptor 要求 K∈[4,8192]。在手机可扫的 QR 密度下（MaxSymbol=151，v12 Q，净 167B/帧），单会话最大可传 ≈ 8192×167 ≈ 1.3MB；即使密度提到 v20 L（净 822B），单会话最大 ≈ 8192×822 ≈ 6.7MB。8MB 文件在单会话内必然超限（8MB/151B≈55000 块），且即使 v20 L 仍需 ~10200 块 > 8192。
+- 日期：2026-08-17（修订：2026-08-20）
+- 决定：记录（非新增实现）喷泉码单会话源块数上限约束。Raptor 码（RFC 5053）理论 K∈[4,8192]，但 gofountain 实现中 K 接近 8192 时内部矩阵求解会越界 panic（实测 K=4096 约 2s 编码，K=8192 不可用），**实际安全上限取 K≤1024**（K=1024 编码约 110ms，O(K²)）。在手机可扫的 QR 密度下（MaxSymbol=151，v12 Q，净 167B/帧），单会话最大可传 ≈ 1024×167 ≈ 167KB；即使密度提到 v20 L（净 822B），单会话最大 ≈ 1024×822 ≈ 822KB。8MB 文件在单会话内必然超限（8MB/151B≈55000 块），必须多会话分片。
 - 原因：用户反馈 8MB 文件编码报 400（`send: 参数错误`），根因为 K 超 Raptor 上限。这是「手机可扫密度」与「喷泉码单会话容量」的内在矛盾，非 bug。
-- 影响：大文件传输需 DEC-012 多会话分片解决；在此之前，单会话传输的合理上限约为 1MB（手机可扫密度）。建议大文件场景改用视频录像离线解析（DEC-013）+ 多会话分片。
+- 影响：大文件传输需 DEC-012 多会话分片解决；在此之前，单会话传输的合理上限约为 167KB（手机可扫密度）。建议大文件场景改用视频录像离线解析（DEC-013）+ 多会话分片。
 - 替代方案：
   - 提高 QR 版本突破上限：手机扫码率随之崩溃，不可行。
   - 放弃喷泉码改可寻址分块（每帧带偏移，按序拼）：失去乱序/丢帧容错，与项目「光学传输可漏帧」定位冲突。
-- 关联：DEC-008（MaxSymbol 密度）、DEC-012（分片方案，进行中）。
-- 最终选择：接受约束，以多会话分片突破。
+- 关联：DEC-008（MaxSymbol 密度）、DEC-012（分片方案）。
+- 最终选择：接受 K≤1024 约束，以多会话分片突破。
 - 状态：已确认
 
 ---
 
 ## DEC-012: 大文件多会话分片传输
 
-- 日期：2026-08-17
-- 决定：发送端将大文件自动拆分为 N 个会话（每会话 ≤8192 块，各自独立 transfer_id 与元数据帧，元数据增 partIndex/partTotal），逐会话生成 QR 流；接收端按会话解码后按 partIndex 顺序拼接还原。配套 DEC-013 视频录像离线解析以提升大文件扫描可靠性。
+- 日期：2026-08-17（修订：2026-08-20）
+- 决定：发送端将大文件自动拆分为 N 个会话（每会话 ≤1024 块，各自独立 transfer_id 与元数据帧，元数据增 partIndex/partTotal），逐会话生成 QR 流；接收端按会话解码后按 partIndex 顺序拼接还原。配套 DEC-013 视频录像离线解析以提升大文件扫描可靠性。
 - 原因：DEC-011 约束下单会话无法承载大文件，必须分片。各分片独立 transfer_id 复用现有 SessionManager 多会话能力。
 - 影响：
-  - `internal/frame/MetaData` 增分片字段：`partIndex`（int，0-based，omitempty）、`partTotal`（int，omitempty）、`overallName`/`overallSize`/`overallHash`（仅在 partIndex=0 携带，omitempty）。`totalSymbols`（已有）。
+  - `internal/frame/MetaData` 增分片字段：`partIndex`（int，0-based，omitempty）、`partTotal`（int，omitempty）、`overallName`（仅 part 0，omitempty）、`overallSize`（仅 part 0，omitempty）、`overallHash`（所有分片携带，作为整体关联键，omitempty）。`totalSymbols`（已有）。
   - `docs/04_api.md §2.3` 同步更新字段表、JSON 示例、分片语义。
-  - `send.BuildStream` 改为多会话迭代器：自动计算分片数（`partSize = 8192 × symbolSize`，`partTotal = ceil(dataLen / partSize)`），逐会话编码。每会话独立 `transfer_id`、独立元数据帧（含分片级 name/size/hash + partIndex/partTotal + 可选的 overall* 字段于 part 0）。
-  - `receive.Processor` 增分片缓存：按 `transfer_id` + `partIndex` 缓存各分片已还原字节，收齐 `0..partTotal-1` 后按序拼接 → 用 `overallHash` 校验整体 SHA-256 → 以 `overallName` 落盘（复用 `.part`→rename 原子落盘）。各分片可独立重发（独立 transfer_id，已有 SessionManager 多会话能力）。
+  - `send.BuildStream` 改为多会话迭代器：自动计算分片数（`partSize = 1024 × symbolSize`，`partTotal = ceil(dataLen / partSize)`），逐会话编码。每会话独立 `transfer_id`、独立元数据帧（含分片级 name/size/hash + partIndex/partTotal + overallHash；仅 part 0 额外含 overallName/overallSize）。
+  - `receive.Processor` 增分片缓存：按 `overallHash` 聚合各分片已还原字节，收齐 `0..partTotal-1` 后按序拼接 → 用 `overallHash` 校验整体 SHA-256 → 以 `overallName` 落盘（复用 `.part`→rename 原子落盘）。各分片可独立重发（独立 transfer_id，已有 SessionManager 多会话能力）。
   - 发送端 `handleEncode`/`/api/frame` 支持会话切换（web 页面的多会话进度）。
   - App 与网页适配多会话进度（显示「第 X/N 分片」+ 分片内块进度）。
+  - `docs/07_decisions.md` DEC-011 同步订正 K 上限为 1024。
 - 替代方案：见 DEC-011 替代方案。
 - 关联：DEC-011（约束）、DEC-013（录像离线解析）。
-- 最终选择：采用多会话分片方案；partIndex 0-based、omitempty；分片级 name/size/hash + part 0 整体 overall* 字段；接收端按 partIndex 缓存拼接后校验整体 SHA-256。
+- 最终选择：采用多会话分片方案；K≤1024；partIndex 0-based、omitempty；分片级 name/size/hash + overallHash 全分片关联 + part 0 额外 overallName/overallSize；接收端按 overallHash 聚合，收齐后拼接校验整体 SHA-256。
 - 状态：已确认
 
 ### DEC-012 实现修订（2026-08-20 TASK-015）
@@ -260,7 +261,7 @@
 1. **K 上限取 1024 而非 8192**：gofountain 在 K 接近 8192 时内部矩阵求解会越界 panic，且 O(K²) 编码代价在 K=4096 时已达约 2s。发送端以 `maxSourceK = 1024` 为单会话安全上限，`partSize = 1024 × symbolSize`（symbolSize 受 MaxSymbol 与 QR 版本容量约束），`partTotal = ceil(数据总长 / partSize)`。每分片分块大小自动取 `ceil(分片长 / 1024)`，满片时恰 K=1024。
 2. **overallHash 为所有分片的关联键**：仅 part 0 携带 `overallName`/`overallSize` 的原始设计存在契约缺口——非 part 0 分片若先于 part 0 到达（网络乱序、分片重发），接收端无法把它们归入同一整体传输。实现修订为：**所有分片均携带 `overallHash`**（接收端按此键聚合），仅 part 0 额外携带 `overallName`/`overallSize`（整体文件信息，拼接落盘用）。
 3. **接收端聚合键为 `overallHash` 而非 `transfer_id`**：各分片独立 transfer_id，接收端 `Processor.assemblies map[overallHash]*partAssembly` 按 `overallHash` 聚合，收集齐 0..partTotal-1 后按序拼接 → 整体 SHA-256 校验 → 以 `overallName` 落盘。
-4. **Raptor 编码器改预生成**：`NextSymbol` 由逐符号重建 O(K³) 中间块改为一次性批量预生成 `K + ceil(redundancy·K)` 个符号（O(K²)，K=1024 实测约 110ms），耗尽后返回 nil 作为流终止信号。`TestNextSymbolInfinite` 相应改为 `TestNextSymbolFinite`。
+4. **Raptor 编码器预生成优化**：`NextSymbol` 首符号开销由逐符号重建 O(K³) 中间块改为一次性批量预生成基础冗余符号（O(K²)，K=1024 实测约 110ms），**但 NextSymbol 仍保持 04_api §3 契约的「可无限产出冗余符号」语义**：耗尽预生成符号后继续产出新冗余符号，不返回 nil。`TestNextSymbolFinite` 恢复为 `TestNextSymbolInfinite` 验证可无限产出。
 
 ---
 
