@@ -33,6 +33,7 @@ type Options struct {
 	ECC        string  // 纠错级别 L/M/Q/H，默认 L
 	Redundancy float64 // 喷泉码冗余度（0~1），默认 0.1
 	BlockSize  int     // 源分块大小（字节），默认 1024
+	MaxSymbol  int     // 单符号字节上限（0=按 Version 容量自适应）。限制后符号更小、QR 更稀疏易扫
 	Terminal   string  // 渲染器：ansi / ascii，默认 ansi
 	Invert     bool    // 反色
 	Quiet      bool    // 关闭进度，只输出最终结果

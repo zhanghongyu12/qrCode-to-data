@@ -1,14 +1,14 @@
 # 任务清单
 
 > 状态：持续更新
-> 最后更新：2026-08-17
+> 最后更新：2026-08-20
 > 维护者：全员可更新
 
 ## 项目状态
 
 - 运行模式：编排模式
-- 当前阶段：阶段 9 - 发布
-- 下一步行动：v0.1.0 已打 tag（含 T-02 修复）；push 待用户批准
+- 当前阶段：阶段 10 - 手机端原生 App 与大文件传输增强（v0.2 开发中）
+- 下一步行动：TASK-014（App 录像+视频离线解析）已实现待测试（待编排者审 diff 批准）；TASK-015（多会话分片）待编排者向用户确认 DEC-012 方向后推进
 - 阻塞项：无
 - 运行模式说明：`独立模式`（角色向用户确认后自提交）或 `编排模式`（角色暂存不提交，经编排者批准后自提交；编排者做集成 merge；push 由编排者申请、用户批准）。编排者激活/退出时翻转本字段。角色启动时读本字段判断提交权。
 - 阻塞项格式说明：无阻塞时填"无"；有阻塞时列出决策编号及简述，如 `DEC-003（待人工确认 API 方案）、DEC-005（待人工确认 UI 与 API 对齐）`。AI 记录阻塞决策到 07_decisions.md 时必须同步更新本字段。
@@ -82,17 +82,56 @@
 - v0.1.0 tag 自初版 commit `d797ca6` 移至含 T-02 修复的最终 commit（`git tag -f`）。
 - push 仍为重大决策，待用户批准。
 
+### 2026-08-17 阶段10 手机端原生 App 与扫码链路修复 - 开发者（用户直接协作）
+
+> 本轮为 v0.1.0 发布后的连续会话，由用户直接驱动开发（非编排模式 subagent 调度）。环境：Windows + 360 AV 拦截临时 exe（`GOTMPDIR` 指向项目 `.tmp/` + `go test -p 1`）；`unset GOROOT`（系统 GOROOT 指向残缺 SDK）；Gradle 8.14.3 / AGP 8.13.0 / Kotlin 2.0.21 已缓存于 ~/.gradle；adb 在 `~/AppData/Local/Android/Sdk/platform-tools`。
+
+- **DEC-007 手机端改原生 Android App**：jsQR 网页对二进制 byte-mode QR 系统性解码失败（高字节 ≥128），base64 包裹又超 QR 容量，且 getUserMedia 需 HTTPS 安全上下文。改 CameraX + ML Kit Barcode（rawBytes 直出二进制帧）+ OkHttp。真机 USB 安装遇 `INSTALL_FAILED_USER_RESTRICTED`（MIUI USB 安装限制），用户关闭后 `adb install -r` 成功。App 三按钮手动触发（扫描/发送/清空），即时反馈已捕获数。
+- **DEC-008 MaxSymbol 限制 QR 密度**：原 v15 数据帧约 v20（97×97）过密，手机扫不到。新增 `send.Options.MaxSymbol`，Web 端固定 151（数据帧 v12 Q，65×65），手机稳定可扫。元数据帧用 `Version: 40`（auto-select min）解决长文件名超 v15 Q 容量报 500。
+- **DEC-010 dedupKey 整帧哈希修复**：早期 dedupKey 仅哈希前 16 字节+长度，而所有数据帧前 16 字节（magic+version+type+flags+transfer_id 前 8B）相同且等长 → 除首帧外全被去重丢弃，手机只捕获 2 块。改整帧哈希后修复，文件传输跑通（SHA-256 校验通过）。
+- **DEC-009 三端计数对齐**：用户反馈「发送端 95 / 手机 91 / 接收端 72 对不上」。根因为喷泉码凑齐 K 即 done、之后符号被丢弃，unique 停在 K。新增 `MetaData.TotalSymbols`（含冗余），接收端进度基准改用之，done 后继续累计；手机端只对数据帧计数；发送端显示数据符号数。验证：`go run` 探针 frames=26 symbols=24 K=19，完成时已收=19/total=24，喂完全部已收=24，校验通过。新增 `TestPostDecodeCounting` 单测。全量 `go test -p 1 ./...` 全绿。
+- **DEC-011 大文件约束定位**：用户传 8MB 文件报 400。根因：MaxSymbol=151 下 8MB 需 ~55000 块，远超 Raptor 单会话 K≤8192 上限；即使 v20 L（822B/帧）仍需 ~10200 块。此为「手机可扫密度」与「喷泉码单会话容量」内在矛盾，非 bug。已向用户说明，用户确认要做成支持大数据慢传 + 手机端录像离线解析。
+- **DEC-013（提议）录像+视频离线解析**：用户提出「手机端识别视频，录一遍后慢慢解析」，将扫描与解码解耦——发送端可高速播放（手机录像不怕漏帧）、可多录几遍做冗余、可离线慢解析。已在进行：布局加「录像模式」按钮，build.gradle 加 camera-video 1.3.4，manifest 加 RECORD_AUDIO 权限；MainActivity 录像+视频解析逻辑实现中（被打断，未完成）。
+- **DEC-012（提议）多会话分片**：配套录像方案让 8MB 真正跑通，需发送端多会话分片（各分片独立 transfer_id，≤8192 块）+ 接收端按 partIndex 顺序拼接。待实现。
+- 测试：本轮新增逻辑均经 `go test -p 1 ./...` 全绿验证；真机已验证文件传输跑通且三端计数对齐；8MB 大文件待 DEC-012/DEC-013 实现后验证。
+- 提交状态：本轮代码（DEC-007~010）部分已提交（commit 2d621c5 等），DEC-009 计数对齐改动尚未提交；push 待用户批准。
+
+---
+
+### 2026-08-20 阶段10 编排者接管 - Coordinator
+
+- 用户授权「以调度者身份指挥调度工作，除特大变更自决」。运行模式保持「编排模式」（上次会话末已是）。
+- 盘点现状：TASK-014（App 录像+视频离线解析，DEC-013）脚手架就位（布局 recordBtn、build.gradle camera-video 1.3.4、manifest RECORD_AUDIO），但 MainActivity.kt **核心录像逻辑尚未开始**——recordBtn 未绑定、无 VideoCapture/MediaMetadataRetriever 逻辑，点「录像模式」当前无响应。可复用基础设施齐备（dedupKey/buf/seen/sendBuffer/scanner/计数）。
+- 性质判定：常规推进（纯 Android Kotlin，复用现有逻辑，不触碰 Go/API/设计文档），非特大变更，自决调度无需上报。
+- 调度 1 个 Developer 子 agent（fork，继承已建立上下文）完成 TASK-014：录像（VideoCapture+withAudioDisabled）+ 停止后 MediaMetadataRetriever 抽帧 → ML Kit 解码 → 复用 dedupKey/seen/buf 去重缓存 → 多段累积 → sendBuffer 上传。提取公共 ingestBarcode 方法供实时扫描与录像解析共用。暂存不提交，待编排者审 diff 批准。
+- 环境限制诚实告知：Android 构建（SDK/Gradle/360 AV）能否编译验证由子 agent 实测后如实报告；实机安装/扫码/录像验证无法在此环境完成，标「待实机验证」。
+- 后续衔接：TASK-014 批准提交后，评估 TASK-015（DEC-012 多会话分片，涉及 Go send/receive 改动）。
+
 ---
 
 ## 看板总览
 
 | 待办 | 进行中 | 已完成 | 已阻塞 |
 |------|--------|--------|--------|
-| 2    | 0      | 11     | 0      |
+| 1    | 0      | 12     | 0      |
 
 ---
 
 ## 待办 (TODO)
+
+## TASK-015: 大文件多会话分片传输（DEC-012）
+
+- 状态：待办
+- 优先级：P1
+- 负责角色：Developer
+- 关联需求：PRD F-01/F-04；DEC-011/DEC-012
+- 估算：2 天
+- 依赖关系：TASK-014
+- 描述：发送端将大文件自动拆分为 N 个会话（各 ≤8192 块，独立 transfer_id 与元数据帧，元数据增 partIndex/partTotal），逐会话生成 QR 流；接收端按会话解码后按 partIndex 顺序拼接还原。发送端 `handleEncode`/`/api/frame` 支持会话切换；App 与网页适配多会话进度。使 8MB 等大文件可在手机可扫密度下传输。
+- 验收标准：
+  - 8MB 文件可编码不报 400；接收端按分片顺序拼接，最终 SHA-256 与原文一致。
+  - 各分片独立 transfer_id，互不干扰；分片中途丢失可重发该分片。
+  - 三端进度显示「第 X/N 分片」+ 分片内块进度。
 
 ## TASK-001: 项目骨架与 Go 模块初始化
 
@@ -275,7 +314,7 @@
 
 ## TASK-013: 手机离线中转网页 web/（Phase 2）
 
-- 状态：待办
+- 状态：已废弃（被 DEC-007 取代）
 - 优先级：P1
 - 负责角色：Developer
 - 关联需求：PRD F-08；02_architecture §3/§4.4；04_api §5；03_database §4
@@ -287,10 +326,25 @@
   - 「收→暂存→发」完整闭环；暂存数据刷新/断电后仍可取。
   - 支持手动删除暂存；空间不足阻止接收并提示。
   - 收发能力对称，帧协议与桌面端一致。
+- 废弃说明：DEC-007 已将手机端从 jsQR 网页改为原生 Android App（ML Kit），原 PWA 方案在二进制 byte-mode QR 场景下不可行。相关网页 `/relay` 保留作兼容遗留。本任务不再推进。
 
 ## 进行中 (IN PROGRESS)
 
-（暂无）
+## TASK-014: 手机 App 录像 + 视频离线解析（DEC-013）
+
+- 状态：待测试
+- 优先级：P1
+- 负责角色：Developer
+- 关联需求：用户 2026-08-17 提出支持大数据慢传，手机端增加视频识别（录一遍后慢慢解析）；DEC-013
+- 估算：2 天
+- 依赖关系：DEC-007（原生 App 基座）
+- 描述：将「扫描」与「解码」解耦——手机录像模式下用 CameraX VideoCapture 录制发送端 QR 流视频，之后离线逐帧（MediaMetadataRetriever）抽帧 + ML Kit 解码 + dedupKey 去重 + 缓存，点「发送到 PC」批量上传。优势：发送端可高速播放（手机录像不怕漏帧）、可多录几遍做冗余、可离线慢解析。配套布局新增「录像模式」按钮；build.gradle 加 camera-video 1.3.4；manifest 加 RECORD_AUDIO 权限。
+- 验收标准：
+  - 录像模式可录制视频并保存到设备；停止后自动逐帧解析，显示「已解析 N 块」。
+  - 解析出的帧经 dedupKey 去重后可批量 POST 给接收端，SHA-256 校验通过。
+  - 实时扫描模式与录像解析模式可切换，共用同一发送/去重/计数逻辑。
+  - 录像可多段拼接（多次录制累积去重）。
+- 当前进度：已实现待测试。编译通过（compileDebugKotlin 成功）。MainActivity 录像+视频逻辑完整：VideoCapture<Recorder> + Quality.SD + withAudioDisabled 录像 → MediaMetadataRetriever 按 ~66ms 步进抽帧 → ML Kit 解码 → 共享 ingestBarcodeBytes 去重+缓存+计数 → sendBuffer 上传。实时扫描与录像解析共用同一路径。实机扫码/录像验证待真机测试。
 
 ## 已完成 (DONE)
 

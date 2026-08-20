@@ -53,6 +53,9 @@ type MetaData struct {
 	Redundancy  float64 `json:"redundancy"`
 	PayloadType string  `json:"payloadType"`
 	MimeType    string  `json:"mimeType"`
+	// TotalSymbols 发送端计划发送的编码符号总数（含冗余，不含元数据重播帧）。
+	// 接收端用作进度基准，使"已收/总数"与发送端、手机端的计数对齐。
+	TotalSymbols int `json:"totalSymbols,omitempty"`
 }
 
 // Header 帧头结构（32 字节）

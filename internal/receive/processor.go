@@ -158,10 +158,6 @@ func NewProcessor(opts Options) (*Processor, error) {
 
 // Process 处理一帧字节。校验失败丢帧（返回 nil）；校验/校验失败等致命错误返回 error。
 func (p *Processor) Process(frameBytes []byte) error {
-	if p.done {
-		return nil
-	}
-
 	f, err := frame.UnmarshalFrame(frameBytes)
 	if err != nil {
 		// CRC/magic 校验失败：丢弃该帧
@@ -186,7 +182,14 @@ func (p *Processor) Process(frameBytes []byte) error {
 			return err
 		}
 		sess.SetMeta(meta)
-		p.expected = meta.BlockCount
+		// 进度基准：发送端计划发送的编码符号总数（含冗余），使接收端"已收/总数"
+		// 与发送端、手机端的计数尽量对齐。旧版本用 BlockCount（K，源块数），
+		// 导致喷泉码凑齐 K 即完成、计数停在 K，与发送端/手机端对不上。
+		if meta.TotalSymbols > 0 {
+			p.expected = meta.TotalSymbols
+		} else {
+			p.expected = meta.BlockCount
+		}
 		if err := fs.ensureDecoder(meta); err != nil {
 			return fmt.Errorf("%w: %v", ErrTransfer, err)
 		}
@@ -199,12 +202,18 @@ func (p *Processor) Process(frameBytes []byte) error {
 		return nil
 	}
 
-	// 数据帧：按 seq 去重
+	// 数据帧：按 seq 去重。即使已还原完成（done），仍继续去重计数，
+	// 使接收端"已收"能追上手机实际扫描到的帧数，三端数字尽量一致。
 	if !sess.MarkReceived(f.Header.Seq) {
 		p.dedupTotal++
 		return nil
 	}
 	p.unique++
+
+	if p.done {
+		// 已还原：不再投喂解码器，仅累计计数
+		return nil
+	}
 
 	if sess.HasMeta() {
 		if err := fs.ensureDecoder(sess.Meta); err != nil {
@@ -320,9 +329,15 @@ func (p *Processor) complete(id [16]byte, fs *fecState, meta *frame.MetaData) er
 	p.done = true
 
 	p.prog.Finish(progress.Event{
-		Kind:    progress.Receive,
-		Count:   p.unique,
-		Total:   meta.BlockCount,
+		Kind:  progress.Receive,
+		Count: p.unique,
+		// 进度基准与 Process 中一致：用 TotalSymbols（含冗余），而非 K。
+		Total: func() int {
+			if meta.TotalSymbols > 0 {
+				return meta.TotalSymbols
+			}
+			return meta.BlockCount
+		}(),
 		Dedup:   p.dedupTotal,
 		Done:    true,
 		Message: fmt.Sprintf("接收完成: %s (%d 字节) 校验通过", outPath, len(data)),

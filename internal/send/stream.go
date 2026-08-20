@@ -104,6 +104,13 @@ func BuildStream(load *payload.Load, opts Options) (*Stream, error) {
 		return nil, fmt.Errorf("%w: QR version %d（EC %s）容量过小，无法承载帧头", ErrUsage, opts.Version, opts.ECC)
 	}
 
+	// 数据符号字节上限：默认按 Version 容量自适应；MaxSymbol>0 时取较小者，
+	// 使单帧 QR 更稀疏（更低版本）以提升手机摄像头扫码识别率（见 DEC-008）。
+	dataMax := maxPayload
+	if opts.MaxSymbol > 0 && opts.MaxSymbol < dataMax {
+		dataMax = opts.MaxSymbol
+	}
+
 	// 自适应分块：符号大小 = ceil(数据长度 / 块数)，须 ≤ 单帧载荷上限
 	blockSize := opts.BlockSize
 	blockCount := payload.BlockCount(load.Data, blockSize)
@@ -111,13 +118,13 @@ func BuildStream(load *payload.Load, opts Options) (*Stream, error) {
 		blockCount = 1
 	}
 	symbolSize := (len(load.Data) + blockCount - 1) / blockCount
-	for symbolSize > maxPayload && blockCount < len(load.Data) {
+	for symbolSize > dataMax && blockCount < len(load.Data) {
 		blockCount++
 		symbolSize = (len(load.Data) + blockCount - 1) / blockCount
 	}
-	if symbolSize > maxPayload {
-		return nil, fmt.Errorf("%w: 数据 %d 字节无法适配 QR version %d（EC %s）单帧容量 %d 字节，请增大 --version 或减小 --block-size",
-			ErrUsage, len(load.Data), opts.Version, opts.ECC, maxPayload)
+	if symbolSize > dataMax {
+		return nil, fmt.Errorf("%w: 数据 %d 字节无法适配 QR version %d（EC %s）单帧容量 %d 字节（MaxSymbol 限制 %d），请增大 --version 或减小 --max-symbol",
+			ErrUsage, len(load.Data), opts.Version, opts.ECC, maxPayload, dataMax)
 	}
 
 	// FEC 方案选择：
@@ -175,16 +182,17 @@ func BuildStream(load *payload.Load, opts Options) (*Stream, error) {
 	}
 
 	meta := &frame.MetaData{
-		Name:        load.Name,
-		Size:        int64(len(load.Data)),
-		BlockSize:   blockSize,
-		BlockCount:  sourceK,
-		HashAlgo:    "sha256",
-		Hash:        payload.SHA256Hex(load.Data),
-		FEC:         scheme,
-		Redundancy:  opts.Redundancy,
-		PayloadType: load.PayloadType,
-		MimeType:    load.MimeType,
+		Name:         load.Name,
+		Size:         int64(len(load.Data)),
+		BlockSize:    blockSize,
+		BlockCount:   sourceK,
+		HashAlgo:     "sha256",
+		Hash:         payload.SHA256Hex(load.Data),
+		FEC:          scheme,
+		Redundancy:   opts.Redundancy,
+		PayloadType:  load.PayloadType,
+		MimeType:     load.MimeType,
+		TotalSymbols: totalData,
 	}
 
 	return &Stream{

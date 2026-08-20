@@ -33,11 +33,12 @@ android {
 }
 
 dependencies {
-    // CameraX：相机预览与图像分析
+    // CameraX：相机预览、图像分析、录像
     implementation("androidx.camera:camera-core:1.3.4")
     implementation("androidx.camera:camera-camera2:1.3.4")
     implementation("androidx.camera:camera-lifecycle:1.3.4")
     implementation("androidx.camera:camera-view:1.3.4")
+    implementation("androidx.camera:camera-video:1.3.4")
 
     // ML Kit 扫码：系统级识别率，离线模型
     implementation("com.google.mlkit:barcode-scanning:17.3.0")

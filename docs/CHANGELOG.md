@@ -6,9 +6,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- DEC-007 手机端原生 Android App：CameraX + ML Kit Barcode（rawBytes 直出二进制帧）+ OkHttp 转发，三按钮手动触发（扫描/发送/清空），即时反馈「已捕获 N 块」。取代 jsQR 网页方案（DEC-002 手机端部分废弃）。Web 服务增 `/dl/app.apk`（APK 下载）、`/`（首页含 APK 下载二维码）、`/api/qrcode`（生成下载链接二维码）、`/scantest`（jsQR 自检）。
+- DEC-008 `send.Options.MaxSymbol`：单符号字节上限（0=自适应），Web 端固定 151（数据帧 v12 Q，65×65，手机可稳定扫描）；元数据帧用 Version:40 auto-select min 解决长文件名超容。
+- DEC-009 `frame.MetaData.TotalSymbols`：发送端填充含冗余的编码符号总数；接收端进度基准改用之，还原完成后继续累计已收使三端计数对齐；手机端只对数据帧（type=0x02）计数；发送端显示数据符号数；`/api/encode` 响应增 `symbols`。新增单测 `TestPostDecodeCounting`。
+- DEC-013 App 录像模式：CameraX VideoCapture 录制 + MediaMetadataRetriever 抽帧离线解析，将扫描与解码解耦。MainActivity.kt 新增录像模式（recordBtn 绑定 ↔ 切换录像/停止；VideoCapture<Recorder> + Quality.SD + 不录音；多段录像累积序号 recordSeq）。停止后 parseExecutor 后台线程 MediaMetadataRetriever 按 ~66ms 步进抽帧 → ML Kit 解码 → 共享 ingestBarcodeBytes 去重+缓存+计数。实时扫描与录像解析共用同一去重/缓存路径。onDestroy 补 parseExecutor.shutdown()。sendBuffer 上传期间禁用 recordBtn。
+
 ### Fixed
 
+- T-03（DEC-010）：手机端 `dedupKey` 改整帧哈希。早期仅哈希前 16 字节+长度，而所有数据帧前 16 字节相同且等长 → 除首帧外全被去重丢弃，手机只捕获 2 块。修复后文件传输跑通，SHA-256 校验通过。
+- T-04（DEC-009）：三端计数对不上（发送端 95/手机 91/接收端 72）。根因为喷泉码凑齐 K 即 done、之后符号被丢弃。改为 TotalSymbols 基准 + done 后继续累计，三端数字可比。
+- T-05（DEC-008）：发送端二维码不动（play 链路改 img.onload 链式调度，等当前帧加载绘制完再调度下一帧）。
+- T-06（DEC-008）：帧 5/帧 0 加载失败 500（元数据帧超 v15 Q 容量，改 Version:40）。
 - T-02（DEC-006）：`qrcode.DecodeImageBytes` 启用 gozxing `PURE_BARCODE` 提示，修复纯二维码大尺寸（≥~315px）下 HybridBinarizer 误估模块数导致约 8% 随机丢帧（报「符号不足」）。此前跨运行随机失败，修复后集成/E2E 多轮复跑全绿。
+- T-01：`send.BuildStream` 元数据 `BlockCount` 改存 boost 后的实际 sourceK（原存原始 blockCount，当 blockCount∈{2,3} 被提升至 K=4 时不匹配，致接收端 `ensureDecoder` 用错误 K 重建解码器，gofountain raptor 解码 panic）
 
 ### Added
 
@@ -37,11 +49,9 @@
 
 ### Deprecated
 
+- DEC-002 手机端「移动网页 PWA」方案被 DEC-007 取代（jsQR 对二进制 byte-mode QR 解码不可靠）。桌面端 Go CLI / FEC / QR 选型不变。
+
 ### Removed
-
-### Fixed
-
-- T-01：`send.BuildStream` 元数据 `BlockCount` 改存 boost 后的实际 sourceK（原存原始 blockCount，当 blockCount∈{2,3} 被提升至 K=4 时不匹配，致接收端 `ensureDecoder` 用错误 K 重建解码器，gofountain raptor 解码 panic）
 
 ### Security
 

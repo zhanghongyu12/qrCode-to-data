@@ -321,6 +321,71 @@ func TestReceiveDedup(t *testing.T) {
 	}
 }
 
+// TestPostDecodeCounting 验证喷泉码还原完成后，仍有数据帧到达时，
+// 接收端继续去重计数（unique 继续增长），且进度基准为 TotalSymbols（含冗余）而非 K。
+// 这保证接收端"已收/总数"能追上手机实际扫描数，三端数字尽量对齐。
+func TestPostDecodeCounting(t *testing.T) {
+	data := bytes.Repeat([]byte("POST-DECODE-COUNTING!"), 200) // ~4200 字节，多块 raptor
+	opts := send.Options{BlockSize: 1024, Version: 20, ECC: "L", Redundancy: 0.25}
+	stream, frames := collectStream(t, data, opts)
+
+	meta := stream.Meta()
+	if meta.TotalSymbols <= 0 {
+		t.Fatalf("期望 meta.TotalSymbols>0，实际 %d", meta.TotalSymbols)
+	}
+	if meta.TotalSymbols <= meta.BlockCount {
+		t.Fatalf("期望 TotalSymbols(%d) > BlockCount/K(%d)（含冗余）", meta.TotalSymbols, meta.BlockCount)
+	}
+
+	outDir := t.TempDir()
+	proc := newTestProcessor(t, outDir, nil)
+
+	// 投喂到刚好完成
+	var res *receive.Result
+	for _, fb := range frames {
+		if err := proc.Process(fb); err != nil {
+			t.Fatalf("Process 失败: %v", err)
+		}
+		if proc.Done() {
+			r, err := proc.Finish()
+			if err != nil {
+				t.Fatalf("Finish 失败: %v", err)
+			}
+			res = r
+			break
+		}
+	}
+	if res == nil {
+		t.Fatal("未还原完成")
+	}
+
+	// 校验还原正确
+	got, err := os.ReadFile(res.OutputPath)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("还原数据与原文不一致 (err=%v)", err)
+	}
+
+	countAtDone, total, _ := proc.Stats()
+	if total != meta.TotalSymbols {
+		t.Errorf("进度 total 期望 TotalSymbols=%d，实际 %d", meta.TotalSymbols, total)
+	}
+
+	// 继续投喂剩余帧（手机扫描后仍会上传），unique 应继续增长
+	for _, fb := range frames {
+		if err := proc.Process(fb); err != nil {
+			t.Fatalf("post-done Process 失败: %v", err)
+		}
+	}
+	countAfter, _, _ := proc.Stats()
+	if countAfter <= countAtDone {
+		t.Errorf("完成后继续投喂，unique 应继续增长：%d → %d", countAtDone, countAfter)
+	}
+	// 仍 ≤ TotalSymbols（去重后）
+	if countAfter > total {
+		t.Errorf("unique 不应超过 total=%d，实际 %d", total, countAfter)
+	}
+}
+
 // TestE2EQRImages 生成 QR 图片到临时目录，再用 file 帧源读回解码还原。
 func TestE2EQRImages(t *testing.T) {
 	data := bytes.Repeat([]byte("QR-IMAGE-ROUNDTRIP!"), 256) // 4096 字节

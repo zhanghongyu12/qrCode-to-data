@@ -86,6 +86,21 @@
                 android:text="开始扫描" />
 
             <Button
+                android:id="@+id/recordBtn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="录像模式" />
+
+            <Button
+                android:id="@+id/sendBtn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:enabled="false"
+                android:text="发送到 PC" />
+
+            <Button
                 android:id="@+id/clearBtn"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"

@@ -106,7 +106,7 @@ input[type=range]{width:240px} button{font-size:16px;padding:10px 24px;border:no
 <div id="info"></div>
 <script>
 const $=id=>document.getElementById(id);
-let frames=0,name='',size=0,playing=false,i=0,timer=null;
+let frames=0,symbols=0,name='',size=0,playing=false,i=0,timer=null;
 $('fps').oninput=e=>$('fpsv').textContent=e.target.value;
 $('drop').onclick=()=>$('file').click();
 ['dragover'].forEach(e=>$('drop').addEventListener(e,ev=>{ev.preventDefault();$('drop').classList.add('hover')}));
@@ -120,22 +120,36 @@ $('send').onclick=async()=>{
   const r=await fetch('/api/encode',{method:'POST',body:fd});
   const j=await r.json();
   if(!r.ok){$('info').textContent='错误';return}
-  frames=j.frames;name=j.name;size=j.size;i=0;playing=true;
+  frames=j.frames;symbols=j.symbols||0;name=j.name;size=j.size;i=0;playing=true;
   $('send').hidden=true;$('stop').hidden=false;
-  $('info').textContent='文件: '+name+' ('+size+'B), 共 '+frames+' 帧';
+  // symbols = 编码符号总数（含冗余），与接收端进度基准一致；frames 含元数据重播帧，仅内部播放用。
+  $('info').textContent='文件: '+name+' ('+size+'B), 共 '+(symbols||frames)+' 块数据符号（含冗余纠错）';
   play();
 };
 $('stop').onclick=()=>{playing=false;clearTimeout(timer);$('send').hidden=false;$('stop').hidden=true;$('info').textContent='已停止'};
+// 链式播放：等当前帧 PNG 加载并绘制完，再按 FPS 间隔调度下一帧。
+// 这样不会因图片加载慢导致帧错乱或"卡住不动"。
 function play(){
   if(!playing)return;
-  if(i>=frames){$('info').textContent='发送完成 ✓（循环重放中）';i=0}
+  if(i>=frames){$('info').textContent='✓ 已播完一轮，循环重放中（帧 '+frames+'）';i=0}
+  const idx=i;i++;
   const img=new Image();
-  img.onload=()=>{const c=$('qr');const tgt=Math.min(window.innerWidth,window.innerHeight)*0.7;
+  img.onload=()=>{
+    if(!playing)return;
+    const c=$('qr');const tgt=Math.min(window.innerWidth,window.innerHeight)*0.7;
     const sc=Math.max(1,Math.floor(tgt/img.width));c.width=img.width*sc;c.height=img.height*sc;
     const x=c.getContext('2d');x.imageSmoothingEnabled=false;x.drawImage(img,0,0,c.width,c.height);
-    $('prog').style.width=(100*i/frames)+'%'};
-  img.src='/api/frame/'+i;i++;
-  timer=setTimeout(play,1000/parseInt($('fps').value));
+    $('prog').style.width=Math.min(100,100*idx/Math.max(1,(symbols||frames)))+'%';
+    $('info').textContent='播放中：第 '+Math.min(idx+1,(symbols||frames))+'/'+(symbols||frames)+' 块｜文件: '+name+' ('+size+'B)';
+    timer=setTimeout(play,1000/parseInt($('fps').value));
+  };
+  img.onerror=()=>{if(!playing)return;
+    // 拉取真实状态码与错误信息，便于定位
+    fetch('/api/frame/'+idx).then(r=>r.text()).then(t=>{
+      $('info').textContent='⚠ 帧 '+idx+' 加载失败（HTTP '+ (t.length>120?t.slice(0,120):t) +'）';
+    }).catch(e=>$('info').textContent='⚠ 帧 '+idx+' 加载失败: '+e.message);
+    timer=setTimeout(play,500)};
+  img.src='/api/frame/'+idx+'?_='+Date.now();
 }
 </script></body></html>`
 
@@ -342,7 +356,7 @@ async function poll(){
     if(!j.ready){$('info').textContent='等待上传…';return}
     if(j.total>0)$('prog').style.width=Math.min(100,j.count/Math.max(1,j.total)*100)+'%';
     if(j.done&&j.name){
-      $('info').innerHTML='✓ 还原成功：<b>'+j.name+'</b> ('+j.size+'B)<br>已落盘：<span class="path">'+j.path+'</span><br>SHA-256: '+j.sha256.slice(0,16)+'…';
+      $('info').innerHTML='✓ 还原成功：<b>'+j.name+'</b> ('+j.size+'B)｜已收 '+(j.count||0)+'/'+(j.total||'?')+' 块<br>已落盘：<span class="path">'+j.path+'</span><br>SHA-256: '+j.sha256.slice(0,16)+'…';
       $('save').hidden=false;$('save').onclick=()=>location.href='/api/recv/file';
     }else{
       $('info').textContent='已收 '+(j.count||0)+'/'+(j.total||'?')+' 块';

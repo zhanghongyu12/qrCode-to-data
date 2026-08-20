@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- 明文 HTTP 允许（接收端 PC 在局域网内，无需 HTTPS） -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- 录像：CameraX VideoCapture 需要（即使不录音也要声明，部分设备校验） -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <uses-feature android:name="android.hardware.camera.any" android:required="true" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />

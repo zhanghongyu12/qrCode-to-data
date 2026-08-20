@@ -1,7 +1,7 @@
 # 决策记录 (Architecture Decision Records)
 
 > 状态：持续追加
-> 最后更新：2026-08-14
+> 最后更新：2026-08-17
 > 维护者：全员可追加
 
 ## 使用说明
@@ -143,6 +143,109 @@
 - 关联：DEC-005（gofountain 低 K 伪满秩，独立问题，本次未触发）；早期 `docs/09_test_report.md` 记录「全绿」系特定运行偶然命中，实际为随机失败，本次订正。
 - 最终选择：`DecodeImageBytes` 启用 `PURE_BARCODE`。
 - 状态：已确认
+
+---
+
+## DEC-007: 手机端从 jsQR 网页改为原生 Android App（ML Kit）
+
+- 日期：2026-08-17
+- 决定：手机中继端放弃 jsQR（getUserMedia 网页）方案，改为原生 Android App：CameraX（ImageAnalysis）+ Google ML Kit Barcode Scanning + OkHttp 转发。接收端 PC 不变（网络接收，无摄像头）。Web 服务（`qrcd web`）提供 `/sender`、`/receiver`、`/relay`（兼容旧网页）、`/`（首页含 APK 下载二维码）、`/dl/app.apk`（APK 下载）。
+- 原因：jsQR 对 QR byte-mode 二进制帧（含高字节 ≥128）系统性解码失败，仅可靠解码可打印 ASCII；即使 base64 包裹，又导致单帧体积超出 QR 容量（v20 Q 482B）。网页 getUserMedia 还需 HTTPS 安全上下文，手机访问证书自签页面受限。ML Kit 为系统级离线扫码引擎，`barcode.rawBytes` 直出二进制帧字节，识别率与稳定性远超 jsQR，且免 HTTPS（App 本地权限）。原决策 DEC-002 的「手机端用移动网页 PWA」在二进制帧场景下不可行，本次推翻手机端载体选择。
+- 影响：
+  - 新增 `android/` 子项目（Gradle 8.14.3 / AGP 8.13.0 / Kotlin 2.0.21 / minSdk 24 / targetSdk 34），依赖 camera 1.3.4、mlkit barcode-scanning 17.3.0、okhttp 4.12.0、appcompat 1.7.0。
+  - App 功能：手动「开始扫描」+「发送到 PC」+「清空」三按钮触发（非自动转发），即时反馈「已捕获 N 块」；dedupKey 整帧哈希去重（见 DEC-010）；帧类型区分（type=0x02 数据帧计入捕获计数，type=0x01 元数据帧仍上传但不计数，见 DEC-009）。
+  - `.gitignore` 增加 `android/.gradle/`、`android/app/build/`、`/qrcd-app-debug.apk` 等。
+  - DEC-002 中「手机端 PWA」标记为被本决策取代（保留 DEC-002 桌面端 Go CLI / FEC / QR 选型）。
+- 替代方案：
+  - 继续用 jsQR 网页 + base64 包裹：容量/可靠性两难，DEC-008 之前已验证失败。
+  - 换更强 JS 扫码库（zxing-js）：仍受 HTTPS 安全上下文与网页解码性能限制。
+  - 跨平台 App（Flutter/React Native）：分发与开发成本高，ML Kit 集成复杂度上升。
+- 关联：DEC-002（手机端载体选型，本决策取代其手机端部分）、DEC-008（QR 密度/单帧载荷，配套 MaxSymbol 限制）、DEC-009（三端计数对齐）、DEC-010（dedupKey 全帧哈希）。
+- 最终选择：原生 Android App + ML Kit。
+- 状态：已确认
+
+---
+
+## DEC-008: 单帧符号字节上限 MaxSymbol 限制 QR 密度以提升手机扫码率
+
+- 日期：2026-08-17
+- 决定：`send.Options` 新增 `MaxSymbol int`（单符号字节上限，0=按 Version 容量自适应）。`BuildStream` 计算 `dataMax = min(maxPayload, opts.MaxSymbol)`，符号大小循环以 `dataMax` 为上限。Web 发送端 `handleEncode` 固定 `MaxSymbol: 151`（数据帧 → v12 Q，65×65 模块，手机摄像头可稳定识别）。元数据帧仍用 `Version: 40`（按文件名长度自动选最小版本，避免长文件名超出 v15 Q 容量 292B）。
+- 原因：原 `Version: 15` 数据帧约 v20（97×97 模块）过密，手机摄像头实测大量失败，文件传输仅扫到少量块即卡死。降密度到 v12（MaxSymbol=151）后手机稳定扫到。DEC-002 设想的 v20 单帧 858B 在实机扫码率上不可行。
+- 影响：
+  - `internal/send/send.go` Options 增 `MaxSymbol` 字段；`stream.go` BuildStream 用 dataMax 限制符号大小。
+  - 元数据帧因文件名长度可变，单独 `Version: 40`（auto-select min），此前用 v15 时长文件名超容报 500。
+  - 单帧载荷变小 → 大文件块数激增，与 DEC-011（Raptor K≤8192 上限）冲突，需 DEC-012 多会话分片解决。
+- 替代方案：
+  - 保持高密度 v20：实机扫码失败，不可行。
+  - 动态探测手机能力自适应版本：实现复杂且无可靠探测手段。
+- 关联：DEC-007（App 扫码）、DEC-011/DEC-012（大文件块数上限）。
+- 最终选择：MaxSymbol=151（数据帧 v12 Q）。
+- 状态：已确认
+
+---
+
+## DEC-009: 三端计数对齐（进度基准改为 TotalSymbols，完成后继续累计）
+
+- 日期：2026-08-17
+- 决定：
+  - `frame.MetaData` 新增 `TotalSymbols int`（发送端计划发送的编码符号总数，含冗余，不含元数据重播帧）。`send.BuildStream` 填充为 `totalData`。
+  - 接收端进度基准从 `BlockCount`（K，源块数）改为 `TotalSymbols`（含冗余）。`Processor.Process` 中 `expected = meta.TotalSymbols`（回退 BlockCount）。
+  - `Processor.Process` 去掉「done 后直接 return」的提前退出：还原完成后仍继续去重计数（unique 继续增长），使接收端「已收」追上手机实际扫描数。
+  - 发送端 `/api/encode` 响应增 `symbols` 字段；发送端页面显示「块数据符号数」（与接收端 total 一致），内部播放仍用含元数据的 `frames`。
+  - 接收端完成提示显示「已收 X/Y 块」。
+  - 手机端只对数据帧（type=0x02）计入「已捕获 N 块」，元数据帧仍上传但不计数。
+- 原因：喷泉码凑齐 K 个源块即解码完成并标记 done，之后到达的符号被 `if p.done { return nil }` 丢弃，unique 停在 K。导致三端数字差异巨大（发送端 95 帧 / 手机 91 块 / 接收端 72），用户误以为「扫描或传输不彻底」。这是喷泉码正常行为（冗余即为此设计），但显示口径不一致造成困惑。统一到「数据符号数（含冗余）」基准后，三端数字可比、完成后接收端继续累计追平手机扫描数。
+- 影响：
+  - `internal/frame/frame.go` MetaData 增 `TotalSymbols`；`internal/send/stream.go` 填充；`internal/receive/processor.go` 进度基准与 done 后计数逻辑；`internal/web/web.go` encode 响应 + `internal/web/pages.go` 三端显示。
+  - 新增测试 `tests/unit/sendreceive/TestPostDecodeCounting`：验证 TotalSymbols>K、完成后继续投喂 unique 增长、进度基准为 TotalSymbols。
+  - 文件完整性仍由 SHA-256 校验保证，计数对齐不改变还原正确性。
+- 替代方案：
+  - 接收端 total 仍用 K 并显示「还原完成即可」：用户困惑「为何只到 72」不消除。
+  - 让接收端 total 含元数据重播帧（= 发送端 frames 95）：元数据帧是控制帧，混入数据计数语义不清；且手机已改为不计数元数据帧，反而又错位。
+- 关联：DEC-010（dedupKey，配合去重正确性）、DEC-007（手机 App 计数）。
+- 最终选择：基准统一为 TotalSymbols，完成后继续累计。
+- 状态：已确认
+
+---
+
+## DEC-010: dedupKey 整帧哈希去重（修复数据帧误判为重复）
+
+- 日期：2026-08-17
+- 决定：手机端 `dedupKey` 从「前 16 字节 + 长度」改为「整帧哈希」（遍历全帧字节，`h = h*31 + byte`，含长度初值）。
+- 原因：早期 dedupKey 只哈希前 16 字节 + 长度。帧头布局：magic[0:4] + version[4] + type[5] + flags[6:8] + transfer_id[8:24] + seq[24:28] + len[28:32]。同一会话所有数据帧的前 16 字节（magic+version+type+flags+transfer_id 前 8 字节）完全相同，且等长（同 symbolSize）→ 所有数据帧 dedupKey 相同 → 除第一个数据帧外全部被去重丢弃，手机只捕获到 2 块（meta + 1 data）。改为整帧哈希后，不同 seq 的数据帧哈希不同，去重正确。
+- 影响：`android/.../MainActivity.kt` dedupKey 函数。Go 侧接收端去重本就用 seq（`Session.MarkReceived`），无误判。
+- 替代方案：仅把 seq 字节纳入哈希（offset 24:28）：可行但脆弱（依赖帧头偏移常量）；整帧哈希更稳健且帧很小（~187B）无性能顾虑。
+- 关联：DEC-007（手机 App 去重）、DEC-009（计数对齐）。
+- 最终选择：整帧哈希。
+- 状态：已确认
+
+---
+
+## DEC-011: Raptor 单会话 K≤8192 上限与 QR 单帧容量的内在约束
+
+- 日期：2026-08-17
+- 决定：记录（非新增实现）喷泉码单会话源块数上限约束：gofountain Raptor 要求 K∈[4,8192]。在手机可扫的 QR 密度下（MaxSymbol=151，v12 Q，净 167B/帧），单会话最大可传 ≈ 8192×167 ≈ 1.3MB；即使密度提到 v20 L（净 822B），单会话最大 ≈ 8192×822 ≈ 6.7MB。8MB 文件在单会话内必然超限（8MB/151B≈55000 块），且即使 v20 L 仍需 ~10200 块 > 8192。
+- 原因：用户反馈 8MB 文件编码报 400（`send: 参数错误`），根因为 K 超 Raptor 上限。这是「手机可扫密度」与「喷泉码单会话容量」的内在矛盾，非 bug。
+- 影响：大文件传输需 DEC-012 多会话分片解决；在此之前，单会话传输的合理上限约为 1MB（手机可扫密度）。建议大文件场景改用视频录像离线解析（DEC-013）+ 多会话分片。
+- 替代方案：
+  - 提高 QR 版本突破上限：手机扫码率随之崩溃，不可行。
+  - 放弃喷泉码改可寻址分块（每帧带偏移，按序拼）：失去乱序/丢帧容错，与项目「光学传输可漏帧」定位冲突。
+- 关联：DEC-008（MaxSymbol 密度）、DEC-012（分片方案，进行中）。
+- 最终选择：接受约束，以多会话分片突破。
+- 状态：已确认
+
+---
+
+## DEC-012: 大文件多会话分片传输（提议）
+
+- 日期：2026-08-17
+- 决定（提议）：发送端将大文件自动拆分为 N 个会话（每会话 ≤8192 块，各自独立 transfer_id 与元数据帧，元数据增 partIndex/partTotal），逐会话生成 QR 流；接收端按会话解码后按 partIndex 顺序拼接还原。配套 DEC-013 视频录像离线解析以提升大文件扫描可靠性。
+- 原因：DEC-011 约束下单会话无法承载大文件，必须分片。各分片独立 transfer_id 复用现有 SessionManager 多会话能力。
+- 影响（待实现）：`internal/frame/MetaData` 增分片字段；`send.BuildStream` 改为多会话迭代器；`receive.Processor` 增分片缓存与顺序拼接；发送端 `handleEncode`/`/api/frame` 支持会话切换；App 与网页适配多会话进度。
+- 替代方案：见 DEC-011 替代方案。
+- 关联：DEC-011（约束）、DEC-013（录像离线解析）。
+- 最终选择：待确认。
+- 状态：提议
 
 ---
 

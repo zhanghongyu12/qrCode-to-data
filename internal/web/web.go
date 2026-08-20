@@ -2,7 +2,6 @@ package web
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image/png"
@@ -163,7 +162,7 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 
 	load := &payload.Load{Data: data, Name: name, PayloadType: pt, MimeType: mime}
 	st, err := send.BuildStream(load, send.Options{
-		Version: 20, ECC: "Q", Redundancy: 0.15, BlockSize: 1024, FPS: 8,
+		Version: 15, ECC: "Q", Redundancy: 0.25, BlockSize: 1024, FPS: 8, MaxSymbol: 151,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), 400)
@@ -183,10 +182,11 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"frames": len(items),
-		"name":   name,
-		"size":   len(data),
-		"hash":   st.Meta().Hash,
+		"frames":   len(items),
+		"symbols":  st.Meta().TotalSymbols,
+		"name":     name,
+		"size":     len(data),
+		"hash":     st.Meta().Hash,
 	})
 }
 
@@ -203,10 +203,15 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	item := sess.items[i]
-	// 帧字节做 base64 编码后再入 QR：内容变为纯可打印 ASCII，
-	// jsQR 解码可打印 byte-mode 内容稳定可靠（二进制高字节 jsQR 会失败，见 DEC-007）。
-	// 手机端 jsQR 解出字符串后用 atob 还原为原始帧字节。
-	code, err := qrcode.Encode([]byte(base64.StdEncoding.EncodeToString(item.Bytes)), qrcode.Options{Version: 20, ECC: "Q"})
+	// 直接用原始帧字节入 QR。手机端原生 App(ML Kit)能可靠解二进制 byte-mode QR。
+	// 数据帧用 v15 上限（payload 151B 自动降到 v12，稀疏易扫）；
+	// meta 帧（含文件名/hash 等）大小随文件名变化，用 v40 上限确保不超容量（见 DEC-009）。
+	// meta 帧虽可能较密但只占少数帧（每周期重播），手机多扫几次能捕获。
+	v := 15
+	if item.IsMeta {
+		v = 40
+	}
+	code, err := qrcode.Encode(item.Bytes, qrcode.Options{Version: v, ECC: "Q"})
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
