@@ -1,7 +1,7 @@
 # 系统架构设计
 
 > 状态：已确认
-> 最后更新：2026-08-14
+> 最后更新：2026-08-20
 > 维护者：Architect
 
 > 说明：本项目形态为 **CLI 工具 + 手机移动网页（Phase 2）**，非传统 Web 服务。本架构文档据此组织，不套用服务端/微服务模板。技术栈选型为「提议」状态（见 `docs/07_decisions.md` DEC-002），待人工确认后生效。
@@ -141,9 +141,10 @@ cmd/qrcd
 文件/文本
   → payload 分块（blockSize，默认 1024B）
   → 计算整体 SHA-256（写入元数据帧）
-  → fec 编码（每源块 → K 个源符号；Raptor 生成带冗余编码符号，编号 id 递增）
+  → 自动分片：大文件拆为 N 个会话（各 ≤8192 块，独立 transfer_id，见 DEC-012）
+  → 逐会话 fec 编码（每源块 → K 个源符号；Raptor 生成带冗余编码符号，编号 id 递增）
   → frame 组帧：
-      ① 元数据帧（type=0x01：文件名/大小/源块数/哈希/FEC 参数）
+      ① 元数据帧（type=0x01：文件名/大小/源块数/哈希/FEC 参数/分片序号 partIndex/partTotal）
       ② 数据帧（type=0x02：符号 id + 符号字节）
       每 N 帧重播一次元数据帧（保证接收端中途加入也能解析）
   → qrcode 生成 QR 位图（version ≤ 上限，EC L）
@@ -156,13 +157,14 @@ cmd/qrcd
 摄像头帧（或图片/文件/stdin）
   → qrcode 解码出字节
   → frame 拆帧：校验 CRC32，失败丢弃；解析 type
-     元数据帧 → 初始化会话（预期总大小/块数/哈希）
+     元数据帧 → 初始化会话（预期总大小/块数/哈希/分片序号 partIndex/partTotal/整体 overall* 字段）
      数据帧 → 按符号 id 去重（已收过忽略）
   → fec 解码：AddSymbol(id, data)；收够足量 → Decode 还原
-  → payload：SHA-256 校验还原结果
-     通过 → 写 .part 临时文件 → rename 为最终文件名，提示「校验通过」
+  → 分片缓存：按 partIndex 缓存各分片已还原字节；收齐 0..partTotal-1 后按序拼接
+  → payload：整体 SHA-256 校验（与 overallHash 比对）
+     通过 → 写 .part 临时文件 → rename 为最终文件名（overallName），提示「校验通过」
      失败 → 丢弃/标记损坏，提示重传
-  → progress 全程显示已收块数/百分比/速率
+  → progress 全程显示分片进度（第 X/N 分片）+ 分片内已收块数/百分比/速率
 ```
 
 ### 4.3 同网加速链路（Phase 2）

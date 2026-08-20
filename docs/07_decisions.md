@@ -236,16 +236,22 @@
 
 ---
 
-## DEC-012: 大文件多会话分片传输（提议）
+## DEC-012: 大文件多会话分片传输
 
 - 日期：2026-08-17
-- 决定（提议）：发送端将大文件自动拆分为 N 个会话（每会话 ≤8192 块，各自独立 transfer_id 与元数据帧，元数据增 partIndex/partTotal），逐会话生成 QR 流；接收端按会话解码后按 partIndex 顺序拼接还原。配套 DEC-013 视频录像离线解析以提升大文件扫描可靠性。
+- 决定：发送端将大文件自动拆分为 N 个会话（每会话 ≤8192 块，各自独立 transfer_id 与元数据帧，元数据增 partIndex/partTotal），逐会话生成 QR 流；接收端按会话解码后按 partIndex 顺序拼接还原。配套 DEC-013 视频录像离线解析以提升大文件扫描可靠性。
 - 原因：DEC-011 约束下单会话无法承载大文件，必须分片。各分片独立 transfer_id 复用现有 SessionManager 多会话能力。
-- 影响（待实现）：`internal/frame/MetaData` 增分片字段；`send.BuildStream` 改为多会话迭代器；`receive.Processor` 增分片缓存与顺序拼接；发送端 `handleEncode`/`/api/frame` 支持会话切换；App 与网页适配多会话进度。
+- 影响：
+  - `internal/frame/MetaData` 增分片字段：`partIndex`（int，0-based，omitempty）、`partTotal`（int，omitempty）、`overallName`/`overallSize`/`overallHash`（仅在 partIndex=0 携带，omitempty）。`totalSymbols`（已有）。
+  - `docs/04_api.md §2.3` 同步更新字段表、JSON 示例、分片语义。
+  - `send.BuildStream` 改为多会话迭代器：自动计算分片数（`partSize = 8192 × symbolSize`，`partTotal = ceil(dataLen / partSize)`），逐会话编码。每会话独立 `transfer_id`、独立元数据帧（含分片级 name/size/hash + partIndex/partTotal + 可选的 overall* 字段于 part 0）。
+  - `receive.Processor` 增分片缓存：按 `transfer_id` + `partIndex` 缓存各分片已还原字节，收齐 `0..partTotal-1` 后按序拼接 → 用 `overallHash` 校验整体 SHA-256 → 以 `overallName` 落盘（复用 `.part`→rename 原子落盘）。各分片可独立重发（独立 transfer_id，已有 SessionManager 多会话能力）。
+  - 发送端 `handleEncode`/`/api/frame` 支持会话切换（web 页面的多会话进度）。
+  - App 与网页适配多会话进度（显示「第 X/N 分片」+ 分片内块进度）。
 - 替代方案：见 DEC-011 替代方案。
 - 关联：DEC-011（约束）、DEC-013（录像离线解析）。
-- 最终选择：待确认。
-- 状态：提议
+- 最终选择：采用多会话分片方案；partIndex 0-based、omitempty；分片级 name/size/hash + part 0 整体 overall* 字段；接收端按 partIndex 缓存拼接后校验整体 SHA-256。
+- 状态：已确认
 
 ---
 

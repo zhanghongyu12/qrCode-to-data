@@ -1,7 +1,7 @@
 # 接口设计（CLI 命令 + 传输协议）
 
 > 状态：已确认
-> 最后更新：2026-08-14
+> 最后更新：2026-08-20
 > 维护者：Architect
 
 > 说明：本项目无 REST API、无服务端。本文档定义三类契约：
@@ -118,7 +118,8 @@ qrcd receive [flags]
 
 ### 2.3 元数据帧（type=0x01）
 
-- payload 为 JSON（UTF-8，单行，无 BOM）：
+- payload 为 JSON（UTF-8，单行，无 BOM）。
+- 单会话（不分片）的 JSON 示例：
 
 ```json
 {
@@ -131,19 +132,55 @@ qrcd receive [flags]
   "fec": "raptor",
   "redundancy": 0.1,
   "payloadType": "file",
-  "mimeType": "application/octet-stream"
+  "mimeType": "application/octet-stream",
+  "totalSymbols": 1127
 }
 ```
 
-| 字段 | 说明 |
-|------|------|
-| `name` | 原始文件名；文本载荷为 `<文本摘要>.txt` 或用户指定 |
-| `size` | 载荷总字节数 |
-| `blockSize` / `blockCount` | 源分块大小与源块数 |
-| `hashAlgo` / `hash` | 整体完整性校验算法与值（当前固定 sha256） |
-| `fec` | FEC 方案：`none` / `lt` / `raptor` |
-| `redundancy` | 冗余度 |
-| `payloadType` / `mimeType` | `text`/`file` 与内容类型 |
+- 多会话分片（大文件拆为 N 个独立传输会话，见 DEC-012）时，第 0 分片（partIndex=0）额外携带整体信息：
+
+```json
+{
+  "name": "part_0.tar.gz.part",
+  "size": 131072,
+  "blockSize": 1024,
+  "blockCount": 128,
+  "hashAlgo": "sha256",
+  "hash": "<part0_sha256>",
+  "fec": "raptor",
+  "redundancy": 0.1,
+  "payloadType": "file",
+  "mimeType": "application/octet-stream",
+  "totalSymbols": 141,
+  "partIndex": 0,
+  "partTotal": 4,
+  "overallName": "backup.tar.gz",
+  "overallSize": 8388608,
+  "overallHash": "<overall_sha256>"
+}
+```
+
+| 字段 | 必需 | 说明 |
+|------|------|------|
+| `name` | 是 | 原始文件名（分片时 = 整体文件名 + `.part` 后缀，如 `backup.tar.gz.part`）；文本载荷为 `<文本摘要>.txt` 或用户指定 |
+| `size` | 是 | 本分片载荷字节数（分片时 = 该分片实际字节数，非整体大小） |
+| `blockSize` / `blockCount` | 是 | 源分块大小与源块数 |
+| `hashAlgo` / `hash` | 是 | 本分片完整性校验算法与值（分片时 = 该分片 SHA-256，非整体） |
+| `fec` | 是 | FEC 方案：`none` / `lt` / `raptor` |
+| `redundancy` | 是 | 冗余度 |
+| `payloadType` / `mimeType` | 是 | `text`/`file` 与内容类型 |
+| `totalSymbols` | 否 | 发送端计划发送的编码符号总数（含冗余），用于接收端进度基准。缺省则回退到 `blockCount`。详见 DEC-009 |
+| `partIndex` | 否（分片时必需） | 分片序号，0-based（0..partTotal-1）。单会话时缺省 |
+| `partTotal` | 否（分片时必需） | 总分片数。单会话时缺省 |
+| `overallName` | 否（仅 part 0） | 整体原始文件名（仅 partIndex=0 携带，拼接后落盘的文件名） |
+| `overallSize` | 否（仅 part 0） | 整体总字节数（仅 partIndex=0 携带） |
+| `overallHash` | 否（仅 part 0） | 整体 SHA-256（仅 partIndex=0 携带，接收端拼接后按此校验） |
+
+**分片语义**（DEC-012）：
+- 大文件（超过单会话 Raptor 容量上限 K≤8192）自动拆为 N 个分片会话，各分片独立 `transfer_id`、独立 QR 流。
+- 每个分片有自己的 `name`/`size`/`hash`（分片级），可独立校验、断点重发分片。
+- `partIndex=0` 的分片额外携带 `overallName`/`overallSize`/`overallHash`，接收端收齐 N 个分片后按序（partIndex 0..N-1）拼接字节，对整体计算 SHA-256 与 `overallHash` 比对，通过后以 `overallName` 落盘。
+- 分片大小自动计算：`partSize = 8192 × symbolSize`（symbolSize 受 MaxSymbol 与 QR 版本容量约束），`partTotal = ceil(原始数据总长 / partSize)`。发送端保证每会话源块数 ≤8192。
 
 - 元数据帧在发送过程中**周期性重播**（默认每 20 个数据帧重播一次），保证接收端中途加入或漏收元数据也能恢复。
 
