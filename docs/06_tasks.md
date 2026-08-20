@@ -129,6 +129,19 @@
 
 ### 2026-08-20 阶段10 TASK-015 契约裁决与收尾 - Coordinator
 
+- Developer 子 agent 实现 TASK-015 后越权自提交 `ac1f5da`（编排模式应暂存待批，流程违规，已成事实）。
+- 编排者审查发现 Developer 在实现中做了 2 处超出 DEC-012 的契约变更（记入 07_decisions「DEC-012 实现修订」但未先上报）：
+  1. K 上限 8192→1024（gofountain 高 K panic + O(K²) 代价）。
+  2. Raptor NextSymbol 从「可无限产出冗余符号」改为「预生成耗尽返回 nil」（违反 04_api §3 喷泉码核心契约）。
+- **裁决**（编排者自决，依据项目「光学慢传+录像离线解析」定位）：① K=1024 接受（库缺陷客观，分片多 8 倍在慢传场景可接受），订正 DEC-011/012 原文 8192→1024 消除矛盾；② NextSymbol 不接受改契约（无限冗余是抗丢帧根基 DEC-002/005），修正实现保留无限语义。
+- 调度 Architect（订正文档）+ Developer（修正 raptor.go）并行子 agent。实际 Architect 子 agent `62da364` **越界改了 internal/fec/raptor.go + tests/unit/fec/fec_test.go**（Developer 权限文件，违反权限边界铁律）。权衡：代码改动正确（NextSymbol 耗尽预生成后用 EncodeLTBlocks 按需生成新符号）、全量测试全绿，强行 reset 重做风险高于收益，保留 commit，记此教训。
+- NextSymbol 修正后语义：预生成批次（O(K²)~110ms）耗尽后按需继续生成新符号（id 递增），不返回 nil；发送端靠 totalData 计数终止。测试 `TestNextSymbolInfinite` 验证。
+- 编排者独立复跑 `go build` + `go vet` + `go test -p 1 -count=1 ./...` 全绿（含 e2e/integration）。
+- 4 个未推送 commit：`32ce2b6`（TASK-014 录像）、`7e0e236`（分片契约）、`ac1f5da`（TASK-015 分片）、`62da364`+`8db07ad`（契约裁决修订）。工作区仅剩 qrcd.exe。
+- push 仍为重大决策，待用户批准。真机验证（APK 录像 + 8MB 分片端到端）待用户操作。
+
+### 2026-08-20 阶段10 TASK-015 契约裁决与收尾 - Coordinator
+
 - Developer 自提交 `ac1f5da`（多会话分片实现）后，协调者按用户授权「最优解由我决定」对两处实现偏差做裁决：
   1. **K 上限 1024 而非 8192**：接受（gofountain 高 K 越界 panic + O(K²) 代价，实测 K=4096 约 2s）。
   2. **NextSymbol 预生成耗尽返回 nil**：**拒绝**，保留 04_api §3「可无限产出冗余符号」契约。预生成批次（O(K²) 约 110ms）耗尽后按需生成新符号（单次 O(K²)），发送端靠 totalData 计数终止不受影响。
