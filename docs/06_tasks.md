@@ -127,6 +127,15 @@
 - 全量验证：`go build ./...` 通过；`go test -p 1 ./...` 全绿（AV 拦截时以项目内 `.gotmp` 作为临时目录规避）。
 - 暂存未提交，待编排者审 diff 后批准提交。
 
+### 2026-08-20 阶段10 TASK-015 契约裁决与收尾 - Coordinator
+
+- Developer 自提交 `ac1f5da`（多会话分片实现）后，协调者按用户授权「最优解由我决定」对两处实现偏差做裁决：
+  1. **K 上限 1024 而非 8192**：接受（gofountain 高 K 越界 panic + O(K²) 代价，实测 K=4096 约 2s）。
+  2. **NextSymbol 预生成耗尽返回 nil**：**拒绝**，保留 04_api §3「可无限产出冗余符号」契约。预生成批次（O(K²) 约 110ms）耗尽后按需生成新符号（单次 O(K²)），发送端靠 totalData 计数终止不受影响。
+- 修订提交 `62da364`：raptor.go 构造器补传 data/fc（修按需生成 nil panic）、`TestNextSymbolFinite`→`TestNextSymbolInfinite`、`TestRaptorRoundtrip` 改固定次数收集避免等 nil 死循环；文档订正 8192→1024（02_architecture / 07_decisions DEC-008 引用 / 06_tasks DEC-011 定位）。
+- 全量验证：`go build ./...`、`go vet`、`go test -p 1 -count=1 ./...`（含 e2e/integration）全绿。
+- 待办：push 属重大决策待用户批准；真机验证 8MB 分片端到端（APK 安装手机，手机环境不可在此代跑）。
+
 ---
 
 ## 看板总览
