@@ -56,6 +56,7 @@ htmlcov/
 *.prof
 coverage.out
 /.tmp/
+/.playwright-cli/
 
 # 运行时生成的自签证书与接收文件目录
 /qrcd-cert.pem

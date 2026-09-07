@@ -225,15 +225,16 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	item := sess.items[i]
-	// 直接用原始帧字节入 QR。手机端原生 App(ML Kit)能可靠解二进制 byte-mode QR。
-	// 数据帧用 v15 上限（payload 151B 自动降到 v12，稀疏易扫）；
-	// meta 帧（含文件名/hash 等）大小随文件名变化，用 v40 上限确保不超容量（见 DEC-009）。
-	// meta 帧虽可能较密但只占少数帧（每周期重播），手机多扫几次能捕获。
+	// 原始帧字节直接入 QR（byte-mode）：手机原生 App(ML Kit) 与 web relay(jsQR
+	// 的 binaryData) 均可可靠还原二进制字节，无 base64 膨胀。
+	// ECC 用 L（7%）：帧内 ECC 与喷泉码分工（corruption vs erasure），L 最大化单帧
+	// 稀疏度（151B 在 L 下降到更低版本，更易扫），丢帧由喷泉码兜底。
+	// 数据帧 v15 上限；meta 帧大小随文件名变化，用 v40 上限确保不超容量（见 DEC-009）。
 	v := 15
 	if item.IsMeta {
 		v = 40
 	}
-	code, err := qrcode.Encode(item.Bytes, qrcode.Options{Version: v, ECC: "Q"})
+	code, err := qrcode.Encode(item.Bytes, qrcode.Options{Version: v, ECC: "L"})
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return

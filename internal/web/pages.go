@@ -211,6 +211,10 @@ const video=$('cam'),out=$('out'),cx=out.getContext('2d'),ov=$('overlay'),ox=ov.
 // 默认转发目标 = 本页所在服务器（即打开此页的接收端 PC）
 let recvUrl=location.origin+'/api/ingest';
 let seen=new Set(),scanning=false,buf=[],scanTicks=0,lastDecodeTick=0;
+// 上传并发流水线（阶段1）：边扫边发，固定并发度，丢帧由喷泉码兜底
+let upQ=[],inFlight=0,uploaded=0,recvTotal=0,recvDone=false,CONCURRENCY=6;
+// 阶段2：rAF 驱动 + 防重入，消除 setTimeout 120ms 人为节流
+let ticking=false,rafId=0;
 // 优先用浏览器原生 BarcodeDetector（调用手机系统条码引擎，识别率/速度远超 jsQR）
 let detector=null,useNative=false,nativeTried=false;
 async function initDetector(){
@@ -229,17 +233,39 @@ function showLib(){
 initDetector().then(ok=>{useNative=ok;showLib()});
 function waitLib(){return typeof jsQR!=='undefined'?Promise.resolve():new Promise(r=>setTimeout(()=>waitLib().then(r),200))}
 waitLib().then(showLib);
-// QR 内容是帧字节的 base64（纯可打印 ASCII，jsQR 解码可靠）。
-// 解出后 atob 还原二进制串 → 每字符 1 字节。
-function decStrToBytes(s){
-  const bin=atob(s);
-  const a=new Uint8Array(bin.length);
-  for(let i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i)&0xFF;
-  return a;
-}
+// 帧字节直接以 byte-mode 入 QR；jsQR 解码后经 binaryData(Uint8Array) 可靠还原，
+// 不再走 base64（无 33% 膨胀）。BarcodeDetector 的 rawValue 对二进制不可靠，仅作回退。
 async function postOne(bytes){
   const r=await fetch(recvUrl,{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:bytes});
   return await r.json();
+}
+// 阶段2b：jsQR 移入 Web Worker，主线程不再被同步解码阻塞。
+// importScripts('/jsQR.js') 在 Worker 内加载 jsQR；创建失败/出错则 worker=null，
+// 回退到主线程同步 jsQR（=阶段2a 行为，不退化到更差）。
+let jsqrWorker=null,workerTried=false;
+function ensureWorker(){
+  if(jsqrWorker||workerTried)return jsqrWorker;
+  workerTried=true;
+  try{
+    const src="importScripts('"+location.origin+"/jsQR.js');self.onmessage=function(e){var m=e.data;if(!m){self.postMessage(null);return}var r=jsQR(m.data,m.width,m.height,{inversionAttempts:'attemptBoth'});self.postMessage(r?{data:r.data,binaryData:r.binaryData,location:r.location}:null);};";
+    jsqrWorker=new Worker(URL.createObjectURL(new Blob([src],{type:'application/javascript'})));
+    jsqrWorker.onerror=function(){jsqrWorker=null;};
+  }catch(e){jsqrWorker=null;}
+  return jsqrWorker;
+}
+// workerDecode 把 jsQR 同步调用转为 worker 异步往返；无 worker 时回退同步。
+// 阶段2a 的 ticking 防重入保证同一时刻只有一个 tick() 在跑，worker 不会并发复用。
+function workerDecode(data,width,height){
+  const w=ensureWorker();
+  if(!w){
+    const r=jsQR(data,width,height,{inversionAttempts:'attemptBoth'});
+    return Promise.resolve(r?{data:r.data,binaryData:r.binaryData,location:r.location}:null);
+  }
+  return new Promise(resolve=>{
+    w.onmessage=function(ev){resolve(ev.data);};
+    w.onerror=function(){jsqrWorker=null;resolve(null);}; // 失败则置空，下次回退同步 jsQR
+    w.postMessage({data:data,width:width,height:height});
+  });
 }
 async function startScan(){
   try{
@@ -252,11 +278,12 @@ async function startScan(){
     $('scanbtn').textContent='停止扫描';
     $('info').textContent='扫描中… 对准发送端二维码（让二维码占满大部分画面）';
     $('hint').textContent='';
-    tick();
+    tickRaf();
   }catch(e){$('info').textContent='摄像头错误: '+e.message}
 }
 function stopScan(){
   scanning=false;
+  if(rafId){cancelAnimationFrame(rafId);rafId=0}
   if(video.srcObject){video.srcObject.getTracks().forEach(tr=>tr.stop());video.srcObject=null}
   $('scanbtn').textContent='开始扫描';
   if(buf.length)$('info').textContent='已停止，共捕获 '+buf.length+' 块，点「发送到 PC」上传';
@@ -272,73 +299,91 @@ function drawBox(b){
 function clearBox(){ox.clearRect(0,0,ov.width,ov.height)}
 async function tick(){
   if(!scanning)return;
-  let text=null,box=null;
+  let bytes=null,box=null;
   if(video.readyState>=2&&video.videoWidth>0){
     // 处理画布 ≤640px（供 jsQR 回退），overlay 与视频显示尺寸对齐
     const scale=Math.min(1,640/Math.max(video.videoWidth,video.videoHeight));
     out.width=Math.round(video.videoWidth*scale);out.height=Math.round(video.videoHeight*scale);
     cx.drawImage(video,0,0,out.width,out.height);
     scanTicks++;
-    if(useNative&&detector){
-      try{
-        nativeTried=true;
-        const codes=await detector.detect(video);
-        if(codes&&codes.length){
-          text=codes[0].rawValue;
-          const b=codes[0].boundingBox;
-          box={x:b.x,y:b.y,width:b.width,height:b.height};
-        }
-      }catch(e){}
-    }
-    if(text===null&&typeof jsQR!=='undefined'){
+    // 优先 jsQR(Worker)：byte-mode 帧经 binaryData 可靠还原二进制字节；
+    // BarcodeDetector 的 rawValue 对二进制不可靠(UTF-8 解码会破坏 ≥0x80 字节)，仅作回退。
+    if(typeof jsQR!=='undefined'){
       const img=cx.getImageData(0,0,out.width,out.height);
-      const r=jsQR(img.data,img.width,img.height,{inversionAttempts:'attemptBoth'});
-      if(r&&r.data){
-        text=r.data;
+      const r=await workerDecode(img.data,img.width,img.height); // 阶段2b：jsQR 进 Worker，主线程不阻塞
+      if(r&&r.binaryData){
+        bytes=new Uint8Array(r.binaryData);
         const L=r.location;
         // jsQR 坐标在处理画布(scale)上，换算回视频原始坐标
         box={x:L.topLeftCorner.x/scale,y:L.topLeftCorner.y/scale,width:(L.topRightCorner.x-L.topLeftCorner.x)/scale,height:(L.bottomLeftCorner.y-L.topLeftCorner.y)/scale};
       }
     }
-    if(text){
-      const key=text.length+':'+text.slice(0,48);
+    if(bytes===null&&useNative&&detector){
+      try{
+        nativeTried=true;
+        const codes=await detector.detect(video);
+        if(codes&&codes.length){
+          const s=codes[0].rawValue;
+          const a=new Uint8Array(s.length);
+          for(let i=0;i<s.length;i++)a[i]=s.charCodeAt(i)&0xFF;
+          bytes=a;
+          const b=codes[0].boundingBox;
+          box={x:b.x,y:b.y,width:b.width,height:b.height};
+        }
+      }catch(e){}
+    }
+    if(bytes){
+      const key=bytes.length+':'+bytes.slice(0,32).join(',');
       if(!seen.has(key)){
         seen.add(key);lastDecodeTick=scanTicks;
-        buf.push(decStrToBytes(text));
-        $('info').textContent='✓ 已捕获 '+buf.length+' 块'+(buf.length>=2?'（可继续扫，或点「发送到 PC」）':'');
+        buf.push(bytes);enqueueUpload(bytes); // 边扫边发：直接上传原始帧字节
         $('sendbtn').disabled=false;
       }
       if(box)drawBox(box);
     }else{clearBox()}
     if(scanTicks-lastDecodeTick>30 && buf.length===0){
-      $('hint').textContent='未识别到二维码，请调整距离/角度/光线，或让二维码占满更多画面'
-        +(nativeTried?'':'');
+      $('hint').textContent='未识别到二维码，请调整距离/角度/光线，或让二维码占满更多画面';
     }else if(buf.length>0){$('hint').textContent=''}
   }
-  setTimeout(tick,useNative?120:100); // 约 8-10fps，顺序执行避免重叠拖垮
+  // 阶段2：rAF 驱动，不再 setTimeout 节流；防重入在 tickRaf 里处理
 }
-async function sendAll(){
-  if(buf.length===0){$('info').textContent='没有可发送的帧，先扫描';return}
-  $('sendbtn').disabled=true;$('scanbtn').disabled=true;
-  $('info').textContent='发送中… 0/'+buf.length;
-  let sent=0,total=0,done=false,lastErr='';
-  for(let i=0;i<buf.length;i++){
-    try{
-      const j=await postOne(buf[i]);
-      if(j&&j.total)total=j.total;
-      if(j&&j.count)sent=j.count;
-      if(j&&j.done)done=true;
-      $('prog').style.width=Math.min(100,sent/Math.max(1,total||buf.length)*100)+'%';
-      $('info').textContent='发送中 '+(i+1)+'/'+buf.length+'（接收端已收 '+sent+'/'+(total||'?')+'）';
-      if(done){$('info').textContent='✓ 上传完成，接收端已还原 ('+sent+'/'+total+')';break}
-    }catch(e){lastErr=e.message;$('info').textContent='发送失败: '+e.message+'（已发 '+(i+1)+'/'+buf.length+'），检查接收端地址后重试';break}
+function tickRaf(){
+  if(!scanning)return;
+  if(!ticking){ticking=true;tick().then(()=>{ticking=false}).catch(()=>{ticking=false})}
+  rafId=requestAnimationFrame(tickRaf);
+}
+// enqueueUpload 把一帧丢进上传队列并立即调度（边扫边发，无需等"扫完"）。
+function enqueueUpload(bytes){upQ.push(bytes);pumpUpload()}
+// pumpUpload 保持 CONCURRENCY 个 in-flight；队列空则停，响应回来递归续发。
+// 失败帧丢弃（喷泉码兜底），不重试不阻塞。
+function pumpUpload(){
+  while(inFlight<CONCURRENCY&&upQ.length>0&&!recvDone){
+    const bytes=upQ.shift();inFlight++;
+    postOne(bytes).then(j=>{
+      inFlight--;uploaded++;
+      if(j&&j.total)recvTotal=j.total;
+      if(j&&j.done)recvDone=true;
+      const denom=Math.max(1,recvTotal||buf.length);
+      $('prog').style.width=Math.min(100,uploaded/denom*100)+'%';
+      const rcv=(j&&j.count)?j.count:'?';
+      if(recvDone){$('info').textContent='✓ 上传完成，接收端已还原（已发 '+uploaded+'，接收端 '+rcv+'/'+(recvTotal||'?')+'）';upQ.length=0;return}
+      $('info').textContent='边扫边发：已扫 '+buf.length+' 已发 '+uploaded+' 在飞 '+inFlight+'（接收端 '+rcv+'/'+(recvTotal||'?')+'）';
+      pumpUpload();
+    }).catch(e=>{
+      inFlight--; // 失败帧丢弃，喷泉码兜底；继续 pump
+      $('info').textContent='上传失败一帧（已发 '+uploaded+'，跳过）: '+e.message;
+      pumpUpload();
+    });
   }
-  $('scanbtn').disabled=false;
-  if(!done&&!lastErr)$('info').textContent='发送完毕 ('+buf.length+' 块已上传)；接收端进度 '+sent+'/'+(total||'?');
-  if(!done)$('sendbtn').disabled=false; // 允许重试/补发
+}
+// sendAll 手动触发/重启上传（tick 已自动边扫边发，此为保险与状态查询）。
+function sendAll(){
+  if(buf.length===0&&upQ.length===0&&inFlight===0){$('info').textContent='没有可发送的帧，先扫描';return}
+  pumpUpload();
+  $('info').textContent='上传中：已扫 '+buf.length+' 已发 '+uploaded+' 在飞 '+inFlight+'（接收端 '+(recvTotal||'?')+'）';
 }
 $('recvurl').onchange=e=>{const v=e.target.value.trim().replace(/\/$/,'');if(v)recvUrl=v+'/api/ingest'};
-$('clear').onclick=()=>{seen.clear();buf.length=0;$('prog').style.width=0;$('sendbtn').disabled=true;$('info').textContent='已清空，重新扫描';$('hint').textContent=''};
+$('clear').onclick=()=>{seen.clear();buf.length=0;upQ.length=0;inFlight=0;uploaded=0;recvTotal=0;recvDone=false;$('prog').style.width=0;$('sendbtn').disabled=true;$('info').textContent='已清空，重新扫描';$('hint').textContent=''};
 $('scanbtn').onclick=()=>{scanning?stopScan():startScan()};
 $('sendbtn').onclick=sendAll;
 </script></body></html>`
