@@ -4,7 +4,7 @@
 
 ## 三个产物（双击即用）
 
-Windows 用户：下载 `qrcd.exe`，**双击运行**——自动起服务并打开浏览器到三端首页：
+Windows 用户：从 [Releases](https://github.com/zhanghongyu12/qrCode-to-data/releases/latest) 下载 `qrcd.exe`（Android 中继 App 同页下载 `qrcd-app-debug.apk`），**双击运行**——自动起服务并打开浏览器到三端首页：
 
 | 产物 | 网址 | 作用 |
 |------|------|------|
