@@ -89,7 +89,7 @@ const senderPage = `<!doctype html>
 <title>qrcd 发送端</title>
 <style>body{font-family:system-ui,sans-serif;text-align:center;margin:0;padding:20px;background:#111;color:#eee}
 h1{font-size:20px} #drop{border:2px dashed #6a6;border-radius:12px;padding:40px;margin:20px auto;max-width:480px;cursor:pointer}
-#drop.hover{background:#1a3a1a} #qr{margin:20px auto;width:min(70vmin,460px);height:auto;image-rendering:pixelated;background:#fff}
+#drop.hover{background:#1a3a1a} #qr{margin:12px auto;width:min(96vmin,100vw);height:auto;image-rendering:pixelated;background:#fff}
 .bar{background:#333;height:8px;border-radius:4px;margin:12px auto;max-width:400px}
 .bar>i{display:block;height:100%;width:0;background:#5d9;border-radius:4px}
 input[type=range]{width:240px} button{font-size:16px;padding:10px 24px;border:none;border-radius:8px;background:#2a7;color:#fff;cursor:pointer;margin:6px}
@@ -98,7 +98,11 @@ input[type=range]{width:240px} button{font-size:16px;padding:10px 24px;border:no
 <h1>qrcd 发送端</h1>
 <p>选文件，屏幕逐帧播放二维码，用另一台设备摄像头扫。</p>
 <div id="drop"><span id="dlabel">点击或拖入文件</span><input type="file" id="file" hidden></div>
-<div><label>FPS <input type="range" id="fps" min="1" max="20" value="6"><span id="fpsv">6</span></label></div>
+<div style="font-size:14px;line-height:2">
+<label>FPS <input type="range" id="fps" min="1" max="30" value="12"><span id="fpsv">12</span></label>
+<label>密度 <select id="density"><option value="151">低 151B</option><option value="350" selected>中 350B</option><option value="600">高 600B</option></select></label>
+<label>网格 <select id="grid"><option value="1">1×1</option><option value="2" selected>2×2</option><option value="3">3×3</option></select></label>
+</div>
 <button id="send">开始发送</button>
 <button id="stop" hidden>停止</button>
 <div class="bar"><i id="prog"></i></div>
@@ -116,6 +120,7 @@ $('file').onchange=e=>{const f=e.target.files[0];if(f)$('dlabel').textContent='�
 $('send').onclick=async()=>{
   const fd=new FormData();const f=$('file').files[0];
   if(f)fd.append('file',f); else fd.append('text',prompt('输入要发送的文本','')||'');
+  fd.append('maxSymbol',$('density').value);
   $('info').textContent='编码中…';
   const r=await fetch('/api/encode',{method:'POST',body:fd});
   const j=await r.json();
@@ -141,31 +146,44 @@ function curPart(idx){
   }
   return null;
 }
+// 网格播放：每屏 grid×grid 个 QR（多码并发），App 每帧解出全部上传 → 吞吐=fps×grid²。
+// 每个 QR 仍稀疏（精度不降），靠数量提速。grid 由下拉选择。
 function play(){
   if(!playing)return;
-  if(i>=frames){$('info').textContent='✓ 已播完一轮，循环重放中（帧 '+frames+'）';i=0}
-  const idx=i;i++;
-  const cp=curPart(idx);
-  const img=new Image();
-  img.onload=()=>{
+  if(i>=frames){$('info').textContent='✓ 已播完一轮，循环重放中';i=0}
+  const grid=parseInt($('grid').value)||1;
+  const n=grid*grid;
+  const idx0=i; i+=n;
+  const slot=[]; let settled=0;
+  for(let k=0;k<n;k++){
+    const im=new Image();
+    im.onload=()=>{settled++; if(settled===n)draw()};
+    im.onerror=()=>{settled++; if(settled===n)draw()};
+    im.src='/api/frame/'+((idx0+k)%frames)+'?_='+Date.now()+'-'+k;
+    slot.push(im);
+  }
+  function draw(){
     if(!playing)return;
-    const c=$('qr');const tgt=Math.min(window.innerWidth,window.innerHeight)*0.7;
-    const sc=Math.max(1,Math.floor(tgt/img.width));c.width=img.width*sc;c.height=img.height*sc;
-    const x=c.getContext('2d');x.imageSmoothingEnabled=false;x.drawImage(img,0,0,c.width,c.height);
-    $('prog').style.width=Math.min(100,100*idx/Math.max(1,(symbols||frames)))+'%';
-    let label='播放中：第 '+Math.min(idx+1,(symbols||frames))+'/'+(symbols||frames)+' 块';
-    if(cp)label+='｜分片 '+cp.part+'/'+cp.total+'（块 '+cp.local+'/'+cp.localTotal+'）';
-    label+='｜文件: '+name+' ('+size+'B)';
+    const c=$('qr');
+    const vmin=Math.min(window.innerWidth,window.innerHeight);
+    const cell=Math.floor(vmin*0.92/grid);
+    c.width=cell*grid; c.height=cell*grid;
+    const x=c.getContext('2d'); x.imageSmoothingEnabled=false;
+    x.fillStyle='#fff'; x.fillRect(0,0,c.width,c.height);
+    for(let k=0;k<n;k++){
+      const im=slot[k]; if(!im.naturalWidth)continue;
+      const r=Math.floor(k/grid), col=k%grid;
+      const nat=im.naturalWidth, up=Math.max(1,Math.floor(cell/nat));
+      const sz=Math.min(cell, nat*up);
+      x.drawImage(im, col*cell+(cell-sz)/2, r*cell+(cell-sz)/2, sz, sz);
+    }
+    $('prog').style.width=Math.min(100,100*idx0/Math.max(1,(symbols||frames)))+'%';
+    const cp=curPart(idx0);
+    let label='播放：第 '+Math.min(idx0+n,(symbols||frames))+'/'+(symbols||frames)+' 块 ｜'+grid+'×'+grid+' 网格 ｜'+name+' ('+size+'B)';
+    if(cp)label+='｜分片 '+cp.part+'/'+cp.total;
     $('info').textContent=label;
     timer=setTimeout(play,1000/parseInt($('fps').value));
-  };
-  img.onerror=()=>{if(!playing)return;
-    // 拉取真实状态码与错误信息，便于定位
-    fetch('/api/frame/'+idx).then(r=>r.text()).then(t=>{
-      $('info').textContent='⚠ 帧 '+idx+' 加载失败（HTTP '+ (t.length>120?t.slice(0,120):t) +'）';
-    }).catch(e=>$('info').textContent='⚠ 帧 '+idx+' 加载失败: '+e.message);
-    timer=setTimeout(play,500)};
-  img.src='/api/frame/'+idx+'?_='+Date.now();
+  }
 }
 </script></body></html>`
 

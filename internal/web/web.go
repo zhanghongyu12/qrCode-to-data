@@ -165,8 +165,22 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	load := &payload.Load{Data: data, Name: name, PayloadType: pt, MimeType: mime}
+	// 单帧字节密度可调（发送端表单 maxSymbol）：默认 350（v12-L，约 2.3× 于旧的 151）。
+	// 上限 666 = v15-L byte-mode 容量；更高需提 Version（更密更难扫，慎用）。
+	maxSymbol := 350
+	if v := r.FormValue("maxSymbol"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 50 && n <= 666 {
+			maxSymbol = n
+		}
+	}
+	fps := 15
+	if v := r.FormValue("fps"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 30 {
+			fps = n
+		}
+	}
 	streams, err := send.BuildSessionStreams(load, send.Options{
-		Version: 15, ECC: "Q", Redundancy: 0.25, BlockSize: 1024, FPS: 8, MaxSymbol: 151,
+		Version: 15, ECC: "L", Redundancy: 0.25, BlockSize: 1024, FPS: fps, MaxSymbol: maxSymbol,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), 400)

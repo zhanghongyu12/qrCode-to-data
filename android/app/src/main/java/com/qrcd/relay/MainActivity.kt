@@ -361,8 +361,12 @@ class MainActivity : AppCompatActivity() {
         val inputImage = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
         scanner.process(inputImage)
             .addOnSuccessListener { barcodes ->
-                val b = barcodes.firstOrNull { it.format == Barcode.FORMAT_QR_CODE }
-                if (b != null) handleBarcode(b, imageProxy.width, imageProxy.height, imageProxy.imageInfo.rotationDegrees)
+                // 多码网格：一帧可能含多个 QR，全部处理（去重在 ingestBarcodeBytes 内）。
+                for (b in barcodes) {
+                    if (b.format == Barcode.FORMAT_QR_CODE) {
+                        handleBarcode(b, imageProxy.width, imageProxy.height, imageProxy.imageInfo.rotationDegrees)
+                    }
+                }
             }
             .addOnCompleteListener {
                 imageProxy.close()
