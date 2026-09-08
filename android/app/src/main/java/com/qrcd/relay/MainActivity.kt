@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.os.Bundle
 import android.util.Log
+import android.util.Size
 import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
@@ -51,7 +52,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var clearBtn: android.widget.Button
 
     private val cameraExecutor = Executors.newSingleThreadExecutor()
-    // 录像后离线解析用独立单线程池，避免与实时扫描/上传争用
+    // 录像后离线解析用独立单线程池，避免与实时扫描/提交争用
     private val parseExecutor = Executors.newSingleThreadExecutor()
     // HTTP 转发用独立线程池，避免阻塞相机分析线程
     private val httpExecutor = Executors.newCachedThreadPool()
@@ -75,7 +76,7 @@ class MainActivity : AppCompatActivity() {
     private val seen = HashSet<Long>()   // 已捕获帧的去重键
     private var analyzeBusy = false
     @Volatile private var capturedCount = 0   // 本地已捕获（去重后）帧数，即时反馈
-    // 扫描期间缓存的帧字节（去重后），点「发送到 PC」批量上传
+    // 扫描期间缓存的帧字节（去重后），点「提交到电脑」批量提交
     private val buf = java.util.concurrent.CopyOnWriteArrayList<ByteArray>()
     @Volatile private var sending = false
 
@@ -131,7 +132,7 @@ class MainActivity : AppCompatActivity() {
         scanning = true
         done = false
         scanBtn.text = "停止扫描"
-        infoText.text = "扫描中… 对准发送端二维码"
+        infoText.text = "扫描中… 对准播放端二维码"
         hintText.text = ""
         bindCamera()
     }
@@ -140,7 +141,7 @@ class MainActivity : AppCompatActivity() {
         scanning = false
         scanBtn.text = "开始扫描"
         infoText.text = if (buf.isNotEmpty())
-            "已停止，共捕获 ${buf.size} 块，点「发送到 PC」上传"
+            "已停止，共捕获 ${buf.size} 块，点「提交到电脑」提交"
         else "已停止，未捕获到任何帧"
         overlay.clearBox()
         try {
@@ -160,6 +161,7 @@ class MainActivity : AppCompatActivity() {
             }
             val analysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .setTargetResolution(Size(1920, 1080))
                 .build()
                 .also { it.setAnalyzer(cameraExecutor, ::analyzeFrame) }
 
@@ -201,7 +203,7 @@ class MainActivity : AppCompatActivity() {
                 it.setSurfaceProvider(previewView.surfaceProvider)
             }
             val recorder = Recorder.Builder()
-                .setQualitySelector(QualitySelector.from(Quality.SD))
+                .setQualitySelector(QualitySelector.from(Quality.FHD))
                 .build()
             videoCapture = VideoCapture.withOutput(recorder)
 
@@ -310,7 +312,7 @@ class MainActivity : AppCompatActivity() {
                 if (file.exists()) file.delete()
                 val pc = capturedCount
                 runOnUiThread {
-                    infoText.text = "✓ 录像解析完成，共 $pc 块（点「发送到 PC」上传）"
+                    infoText.text = "✓ 录像解析完成，共 $pc 块（点「提交到电脑」提交）"
                     sendBtn.isEnabled = true
                 }
             } catch (e: Exception) {
@@ -399,9 +401,9 @@ class MainActivity : AppCompatActivity() {
                     bb.width().toFloat() / imgW, bb.height().toFloat() / imgH
                 )
             }
-            // 即时反馈：已捕获帧数（暂存本地，点「发送到 PC」上传）
+            // 即时反馈：已捕获帧数（暂存本地，点「提交到电脑」提交）
             if (!done && !sending) {
-                infoText.text = "✓ 已捕获 $capturedCount 块（点「发送到 PC」上传）"
+                infoText.text = "✓ 已捕获 $capturedCount 块（点「提交到电脑」提交）"
                 sendBtn.isEnabled = true
             }
         }
@@ -412,14 +414,14 @@ class MainActivity : AppCompatActivity() {
     /**
      * 对帧字节做去重并缓存到 buf。
      * 返回 true 表示新帧（非重复），false 表示重复丢弃。
-     * 仅数据帧(type=0x02)计入 capturedCount（与接收端 TotalSymbols 对齐）。
+     * 仅数据帧(type=0x02)计入 capturedCount（与还原端 TotalSymbols 对齐）。
      */
     private fun ingestBarcodeBytes(bytes: ByteArray): Boolean {
         val key = dedupKey(bytes)
         synchronized(seen) {
             if (!seen.add(key)) return false
         }
-        // 帧头偏移 5 是 type：0x02=数据帧，0x01=元数据帧（控制帧，上传但不计数）
+        // 帧头偏移 5 是 type：0x02=数据帧，0x01=元数据帧（控制帧，提交但不计数）
         val isData = bytes.size > 5 && (bytes[5].toInt() and 0xFF) == 0x02
         buf.add(bytes)
         if (isData) capturedCount++
@@ -444,22 +446,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 批量发送已缓存的帧到接收端 /api/ingest，逐帧 POST。
-     * 接收端返回 count/total 进度；done=true 表示重组完成。
+     * 批量提交已缓存的帧到还原端 /api/ingest，逐帧 POST。
+     * 还原端返回 count/total 进度；done=true 表示重组完成。
      */
     private fun sendBuffer() {
         if (sending) return
         if (buf.isEmpty()) {
-            infoText.text = "没有可发送的帧，先扫描"
+            infoText.text = "没有可提交的帧，先扫描"
             return
         }
+        val url = resolveRecvUrl()
+        if (url.isEmpty()) return
         sending = true
         sendBtn.isEnabled = false
         scanBtn.isEnabled = false
         recordBtn.isEnabled = false
         val total = buf.size
-        infoText.text = "发送中… 0/$total"
-        val url = resolveRecvUrl()
+        infoText.text = "提交中… 0/$total"
         httpExecutor.execute {
             var sentCount = 0
             var recvTotal = 0
@@ -483,17 +486,17 @@ class MainActivity : AppCompatActivity() {
                         val err = j.optString("error", "")
                         runOnUiThread {
                             if (!ok && err.isNotEmpty()) {
-                                hintText.text = "接收端错误: $err"
+                                hintText.text = "还原端错误: $err"
                                 return@runOnUiThread
                             }
                             if (recvTotal > 0) {
                                 progressBar.progress = (sentCount * 100 / recvTotal).coerceIn(0, 100)
                             }
-                            infoText.text = "发送中 ${i + 1}/$total（接收端已收 $sentCount/$recvTotal）"
+                            infoText.text = "提交中 ${i + 1}/$total（还原端已收 $sentCount/$recvTotal）"
                             if (d) {
                                 done = true
                                 infoText.text = "✓ 还原完成 ($sentCount/$recvTotal)"
-                                hintText.text = "文件已落在接收端 PC 的 downloads/ 目录"
+                                hintText.text = "文件已落在还原端电脑的 downloads/ 目录"
                                 overlay.clearBox()
                             }
                         }
@@ -503,7 +506,7 @@ class MainActivity : AppCompatActivity() {
                 } catch (e: Exception) {
                     lastErr = e.message
                     runOnUiThread {
-                        infoText.text = "发送失败: ${e.message}（已发 ${i + 1}/$total），检查接收端地址后重试"
+                        infoText.text = "提交失败: ${e.message}（已发 ${i + 1}/$total），检查还原端地址后重试"
                     }
                     stop = true
                 }
@@ -516,7 +519,7 @@ class MainActivity : AppCompatActivity() {
                 if (!done) {
                     sendBtn.isEnabled = true  // 允许重试/补发
                     if (lastErr == null) {
-                        infoText.text = "发送完毕 ($total 块)；接收端进度 $sentCount/$recvTotal"
+                        infoText.text = "提交完毕 ($total 块)；还原端进度 $sentCount/$recvTotal"
                     }
                 }
             }
@@ -525,7 +528,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun resolveRecvUrl(): String {
         var s = recvUrlEdit.text.toString().trim()
-        if (s.isEmpty()) s = "localhost:8080"
+        if (s.isEmpty()) {
+            infoText.text = "请先填写电脑地址（本机IP:端口，如 192.168.253.1:8080）"
+            return ""
+        }
         if (!s.startsWith("http")) s = "http://$s"
         s = s.trimEnd('/')
         if (!s.endsWith("/api/ingest")) s = "$s/api/ingest"

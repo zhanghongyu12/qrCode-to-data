@@ -40,7 +40,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:inputType="textUri"
-            android:hint="接收端地址（如 192.168.1.10:8080）"
+            android:hint="还原端地址（如 192.168.1.10:8080）"
             android:textColor="#eee"
             android:textColorHint="#666"
             android:textSize="14sp" />
@@ -59,7 +59,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
-            android:text="点「开始扫描」对准发送端二维码"
+            android:text="点「开始扫描」对准播放端二维码"
             android:textColor="#eee"
             android:textSize="15sp"
             android:gravity="center" />
@@ -98,7 +98,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
                 android:enabled="false"
-                android:text="发送到 PC" />
+                android:text="提交到电脑" />
 
             <Button
                 android:id="@+id/clearBtn"

@@ -13,6 +13,8 @@
 - DEC-009 `frame.MetaData.TotalSymbols`：发送端填充含冗余的编码符号总数；接收端进度基准改用之，还原完成后继续累计已收使三端计数对齐；手机端只对数据帧（type=0x02）计数；发送端显示数据符号数；`/api/encode` 响应增 `symbols`。新增单测 `TestPostDecodeCounting`。
 - DEC-013 App 录像模式：CameraX VideoCapture 录制 + MediaMetadataRetriever 抽帧离线解析，将扫描与解码解耦。MainActivity.kt 新增录像模式（recordBtn 绑定 ↔ 切换录像/停止；VideoCapture<Recorder> + Quality.SD + 不录音；多段录像累积序号 recordSeq）。停止后 parseExecutor 后台线程 MediaMetadataRetriever 按 ~66ms 步进抽帧 → ML Kit 解码 → 共享 ingestBarcodeBytes 去重+缓存+计数。实时扫描与录像解析共用同一去重/缓存路径。onDestroy 补 parseExecutor.shutdown()。sendBuffer 上传期间禁用 recordBtn。
 
+- DEC-014 桌面端原生窗口 + 系统托盘 + 三安装包拆分 + 中性命名：桌面端改用 `go-webview2` 原生窗口（纯 Go 无 cgo，`-H windowsgui` 编译去控制台黑窗）+ `getlantern/systray` 右下角托盘常驻（关窗不退、右键「打开桌面端/退出」）。按角色拆三个独立安装包——`qrcd-a.exe`（播放端/role=a）、`qrcd-b.exe`（还原端/role=b）、`qrcd-relay.apk`（中继），桌面 role 经 `-ldflags "-X main.role=…"` 烘焙，托盘图标为中心大写字母（A/B/Q，内联生成 32×32 ICO）。包名与界面脱敏：发送端→播放端、接收端→还原端、发送→播放/输出、接收→还原、传输→交换、上传→提交、下载→保存。
+
 ### Fixed
 
 - T-03（DEC-010）：手机端 `dedupKey` 改整帧哈希。早期仅哈希前 16 字节+长度，而所有数据帧前 16 字节相同且等长 → 除首帧外全被去重丢弃，手机只捕获 2 块。修复后文件传输跑通，SHA-256 校验通过。
@@ -20,6 +22,8 @@
 - T-05（DEC-008）：发送端二维码不动（play 链路改 img.onload 链式调度，等当前帧加载绘制完再调度下一帧）。
 - T-06（DEC-008）：帧 5/帧 0 加载失败 500（元数据帧超 v15 Q 容量，改 Version:40）。
 - T-02（DEC-006）：`qrcode.DecodeImageBytes` 启用 gozxing `PURE_BARCODE` 提示，修复纯二维码大尺寸（≥~315px）下 HybridBinarizer 误估模块数导致约 8% 随机丢帧（报「符号不足」）。此前跨运行随机失败，修复后集成/E2E 多轮复跑全绿。
+- 桌面端窗口假死：go-webview2 `Run()` 不自锁线程，在 goroutine 中运行致 HWND 与消息循环线程漂移 → 窗口无响应；加 `runtime.LockOSThread()` 修复。
+- App 地址留空默认 `localhost:8080`（真机上指向手机自己）改为留空提示「请先填写电脑地址」，避免提交给自己静默失败。
 - T-01：`send.BuildStream` 元数据 `BlockCount` 改存 boost 后的实际 sourceK（原存原始 blockCount，当 blockCount∈{2,3} 被提升至 K=4 时不匹配，致接收端 `ensureDecoder` 用错误 K 重建解码器，gofountain raptor 解码 panic）
 
 ### Added

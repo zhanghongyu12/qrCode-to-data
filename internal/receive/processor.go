@@ -19,13 +19,13 @@ var (
 	ErrUsage = errors.New("receive: 参数错误")
 	// ErrEnv 环境错误（退出码 3，如摄像头不可用、输出不可写）
 	ErrEnv = errors.New("receive: 环境错误")
-	// ErrTransfer 传输/解码失败（退出码 1，如校验失败、符号不足、超时）
-	ErrTransfer = errors.New("receive: 传输失败")
+	// ErrTransfer 交换/解码失败（退出码 1，如校验失败、符号不足、超时）
+	ErrTransfer = errors.New("receive: 交换失败")
 	// ErrInterrupted 用户中断（Ctrl+C）
-	ErrInterrupted = errors.New("receive: 接收已停止")
+	ErrInterrupted = errors.New("receive: 还原已停止")
 )
 
-// Result 接收结果。
+// Result 还原结果。
 type Result struct {
 	OutputPath string
 	Name       string
@@ -39,7 +39,7 @@ type bufSym struct {
 	data []byte
 }
 
-// fecState 单个传输会话的 FEC 解码状态。
+// fecState 单个交换会话的 FEC 解码状态。
 type fecState struct {
 	dec      fec.Decoder
 	buffered []bufSym
@@ -66,7 +66,7 @@ func (fs *fecState) ensureDecoder(meta *frame.MetaData) error {
 	if err != nil {
 		return fmt.Errorf("receive: 创建 %q 解码器失败: %w", meta.FEC, err)
 	}
-	// gofountain 要求 messageLength 为块数的整数倍（发送端已补齐），
+	// gofountain 要求 messageLength 为块数的整数倍（播放端已补齐），
 	// 否则源码块不等长（padding）会导致解码结果错误。
 	msgLen := int(meta.Size)
 	if meta.FEC == "raptor" || meta.FEC == "lt" {
@@ -123,7 +123,7 @@ func (fs *fecState) finishDecode() error {
 	return nil
 }
 
-// partAssembly 多会话分片传输的整体聚合状态（DEC-012）。
+// partAssembly 多会话分片交换的整体聚合状态（DEC-012）。
 // 各分片以独立 transfer_id/独立会话到达，FEC 各自完成后在此按 overallHash 聚合；
 // 收集齐 0..PartTotal-1 全部分片后拼接、整体校验、落盘。
 type partAssembly struct {
@@ -136,8 +136,8 @@ type partAssembly struct {
 	done        bool
 }
 
-// Processor 接收帧处理器（白盒可测核心）：
-// 逐帧接收字节 → 拆帧（CRC/去重/元数据初始化）→ FEC 解码 → 校验 → 落盘。
+// Processor 还原帧处理器（白盒可测核心）：
+// 逐帧还原字节 → 拆帧（CRC/去重/元数据初始化）→ FEC 解码 → 校验 → 落盘。
 type Processor struct {
 	opts       Options
 	sm         *frame.SessionManager
@@ -153,7 +153,7 @@ type Processor struct {
 	mu         sync.Mutex
 }
 
-// NewProcessor 创建接收帧处理器。
+// NewProcessor 创建还原帧处理器。
 func NewProcessor(opts Options) (*Processor, error) {
 	if opts.Out == nil {
 		opts.Out = io.Discard
@@ -197,9 +197,9 @@ func (p *Processor) Process(frameBytes []byte) error {
 			return err
 		}
 		sess.SetMeta(meta)
-		// 进度基准：发送端计划发送的编码符号总数（含冗余），使接收端"已收/总数"
-		// 与发送端、手机端的计数尽量对齐。旧版本用 BlockCount（K，源块数），
-		// 导致喷泉码凑齐 K 即完成、计数停在 K，与发送端/手机端对不上。
+		// 进度基准：播放端计划播放的编码符号总数（含冗余），使还原端"已收/总数"
+		// 与播放端、手机端的计数尽量对齐。旧版本用 BlockCount（K，源块数），
+		// 导致喷泉码凑齐 K 即完成、计数停在 K，与播放端/手机端对不上。
 		if meta.TotalSymbols > 0 {
 			p.expected = meta.TotalSymbols
 		} else {
@@ -218,7 +218,7 @@ func (p *Processor) Process(frameBytes []byte) error {
 	}
 
 	// 数据帧：按 seq 去重。即使已还原完成（done），仍继续去重计数，
-	// 使接收端"已收"能追上手机实际扫描到的帧数，三端数字尽量一致。
+	// 使还原端"已收"能追上手机实际扫描到的帧数，三端数字尽量一致。
 	if !sess.MarkReceived(f.Header.Seq) {
 		p.dedupTotal++
 		return nil
@@ -261,7 +261,7 @@ func (p *Processor) Result() (*Result, error) {
 	if p.done && p.result != nil {
 		return p.result, nil
 	}
-	return nil, fmt.Errorf("%w: 符号不足，未能还原数据，请调整角度重扫或重新发送", ErrTransfer)
+	return nil, fmt.Errorf("%w: 符号不足，未能还原数据，请调整角度重扫或重试", ErrTransfer)
 }
 
 // Stats 返回（唯一块数, 期望块数, 去重数）。
@@ -297,7 +297,7 @@ func (p *Processor) checkMeta(meta *frame.MetaData) error {
 		expectSize = meta.Size
 	}
 	if p.opts.ExpectSize > 0 && expectSize != p.opts.ExpectSize {
-		return fmt.Errorf("%w: 预期大小 %d 与实际 %d 不匹配，请确认发送端", ErrTransfer, p.opts.ExpectSize, expectSize)
+		return fmt.Errorf("%w: 预期大小 %d 与实际 %d 不匹配，请确认播放端", ErrTransfer, p.opts.ExpectSize, expectSize)
 	}
 	wantHash := meta.OverallHash
 	if wantHash == "" {
@@ -306,7 +306,7 @@ func (p *Processor) checkMeta(meta *frame.MetaData) error {
 	if p.opts.Hash != "" {
 		exp := strings.TrimPrefix(p.opts.Hash, "sha256:")
 		if exp != "" && exp != wantHash {
-			return fmt.Errorf("%w: 预期 SHA-256 与元数据不匹配，请确认发送端", ErrTransfer)
+			return fmt.Errorf("%w: 预期 SHA-256 与元数据不匹配，请确认播放端", ErrTransfer)
 		}
 	}
 	return nil
@@ -318,7 +318,7 @@ func (p *Processor) complete(id [16]byte, fs *fecState, meta *frame.MetaData) er
 		return nil
 	}
 	data := fs.decoded
-	// 发送端补齐到块数整数倍，此处截断到原始大小
+	// 播放端补齐到块数整数倍，此处截断到原始大小
 	if int64(len(data)) > meta.Size {
 		data = data[:int(meta.Size)]
 	}
@@ -329,7 +329,7 @@ func (p *Processor) complete(id [16]byte, fs *fecState, meta *frame.MetaData) er
 	}
 
 	if !payload.VerifySHA256(data, meta.Hash) {
-		return fmt.Errorf("%w: SHA-256 校验失败，已丢弃损坏数据，请重新发送", ErrTransfer)
+		return fmt.Errorf("%w: SHA-256 校验失败，已丢弃损坏数据，请重试", ErrTransfer)
 	}
 	if p.opts.Hash != "" {
 		exp := strings.TrimPrefix(p.opts.Hash, "sha256:")
@@ -369,7 +369,7 @@ func (p *Processor) complete(id [16]byte, fs *fecState, meta *frame.MetaData) er
 		}(),
 		Dedup:   p.dedupTotal,
 		Done:    true,
-		Message: fmt.Sprintf("接收完成: %s (%d 字节) 校验通过", outPath, len(data)),
+		Message: fmt.Sprintf("还原完成: %s (%d 字节) 校验通过", outPath, len(data)),
 	})
 	return nil
 }
@@ -379,13 +379,13 @@ func (p *Processor) complete(id [16]byte, fs *fecState, meta *frame.MetaData) er
 // 整体 SHA-256 校验 → 以整体文件名落盘。
 func (p *Processor) completePart(meta *frame.MetaData, data []byte) error {
 	if !payload.VerifySHA256(data, meta.Hash) {
-		return fmt.Errorf("%w: 分片 %d/%d SHA-256 校验失败，已丢弃该分片数据，请重新发送",
+		return fmt.Errorf("%w: 分片 %d/%d SHA-256 校验失败，已丢弃该分片数据，请重试",
 			ErrTransfer, meta.PartIndex+1, meta.PartTotal)
 	}
 
 	key := meta.OverallHash
 	if key == "" {
-		return fmt.Errorf("%w: 分片缺少 overallHash 关联键，无法聚合（发送端版本过低？）", ErrTransfer)
+		return fmt.Errorf("%w: 分片缺少 overallHash 关联键，无法聚合（播放端版本过低？）", ErrTransfer)
 	}
 	as := p.assemblies[key]
 	if as == nil {
@@ -443,10 +443,10 @@ func (p *Processor) spliceAssembly(as *partAssembly) error {
 		full = append(full, part...)
 	}
 	if as.overallSize > 0 && int64(len(full)) != as.overallSize {
-		return fmt.Errorf("%w: 拼接长度 %d 与整体大小 %d 不一致，请重新发送", ErrTransfer, len(full), as.overallSize)
+		return fmt.Errorf("%w: 拼接长度 %d 与整体大小 %d 不一致，请重试", ErrTransfer, len(full), as.overallSize)
 	}
 	if !payload.VerifySHA256(full, as.overallHash) {
-		return fmt.Errorf("%w: 整体 SHA-256 校验失败，拼接数据损坏，请重新发送", ErrTransfer)
+		return fmt.Errorf("%w: 整体 SHA-256 校验失败，拼接数据损坏，请重试", ErrTransfer)
 	}
 
 	name := as.overallName
@@ -479,7 +479,7 @@ func (p *Processor) spliceAssembly(as *partAssembly) error {
 		Total: p.expected,
 		Dedup: p.dedupTotal,
 		Done:  true,
-		Message: fmt.Sprintf("接收完成: %s (%d 字节) 多分片拼接校验通过", outPath, len(full)),
+		Message: fmt.Sprintf("还原完成: %s (%d 字节) 多分片拼接校验通过", outPath, len(full)),
 	})
 	return nil
 }

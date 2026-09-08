@@ -4,7 +4,7 @@ import (
 	"sync"
 )
 
-// Session 表示一个传输会话，按 transfer_id 区分
+// Session 表示一个交换会话，按 transfer_id 区分
 type Session struct {
 	TransferID [16]byte
 	Meta       *MetaData
@@ -34,7 +34,7 @@ func (s *Session) HasMeta() bool {
 	return s.Meta != nil
 }
 
-// MarkReceived 标记 seq 已接收，返回 false 表示重复
+// MarkReceived 标记 seq 已还原，返回 false 表示重复
 func (s *Session) MarkReceived(seq uint32) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -45,21 +45,21 @@ func (s *Session) MarkReceived(seq uint32) bool {
 	return true
 }
 
-// IsReceived 检查 seq 是否已接收
+// IsReceived 检查 seq 是否已还原
 func (s *Session) IsReceived(seq uint32) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.received[seq]
 }
 
-// ReceivedCount 返回已接收的唯一 seq 数量
+// ReceivedCount 返回已还原的唯一 seq 数量
 func (s *Session) ReceivedCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.received)
 }
 
-// SessionManager 管理多个传输会话，按 transfer_id 区分
+// SessionManager 管理多个交换会话，按 transfer_id 区分
 type SessionManager struct {
 	sessions map[[16]byte]*Session
 	mu       sync.RWMutex

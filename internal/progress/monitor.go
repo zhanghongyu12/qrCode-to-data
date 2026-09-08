@@ -7,7 +7,7 @@ import (
 )
 
 // ErrTimeout 无新块超时
-var ErrTimeout = errors.New("progress: 无新块超时，传输可能卡死（可 Ctrl+C 终止）")
+var ErrTimeout = errors.New("progress: 无新块超时，交换可能卡死（可 Ctrl+C 终止）")
 
 // Monitor 无新块超时监控器。
 // timeout<=0 表示不启用超时检测。

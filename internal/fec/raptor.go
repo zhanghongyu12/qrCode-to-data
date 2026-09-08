@@ -14,7 +14,7 @@ type raptorCodecImpl struct {
 // NewRaptorCodec 创建 Raptor Codec
 // sourceSymbols: 源符号数，须在 [4, 8192] 范围内。
 // 注意：gofountain 在 K=8192 时内部矩阵求解会越界 panic，实际安全上限约 4096；
-// 发送端经多会话分片（DEC-012）保证单会话 K ≤ 1024，本层仅按库能力放宽。
+// 播放端经多会话分片（DEC-012）保证单会话 K ≤ 1024，本层仅按库能力放宽。
 func NewRaptorCodec(sourceSymbols int) Codec {
 	return &raptorCodecImpl{sourceSymbols: sourceSymbols}
 }

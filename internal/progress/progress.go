@@ -12,23 +12,23 @@ import (
 type Kind int
 
 const (
-	// Send 发送端进度
+	// Send 播放端进度
 	Send Kind = iota
-	// Receive 接收端进度
+	// Receive 还原端进度
 	Receive
 )
 
 // String 返回中文标签
 func (k Kind) String() string {
 	if k == Send {
-		return "发送"
+		return "播放"
 	}
-	return "接收"
+	return "还原"
 }
 
 // Event 统一进度事件，供 send/receive 编排层调用
 type Event struct {
-	// Kind 事件类型（发送/接收）
+	// Kind 事件类型（播放/还原）
 	Kind Kind
 	// Count send: 已播块数；receive: 唯一已收块数
 	Count int
@@ -126,19 +126,19 @@ func (t *Terminal) LastUpdate() time.Time {
 }
 
 // FormatEvent 将进度事件格式化为一行文本（不含 ANSI 控制序列，便于测试）。
-// 发送端：发送: 45/100 块 | 45.0% | 12.3 fps | 剩余约 5s
-// 接收端：接收: 45/100 块 | 45.0% | 去重 3 | 12.3 块/s
+// 播放端：播放: 45/100 块 | 45.0% | 12.3 fps | 剩余约 5s
+// 还原端：还原: 45/100 块 | 45.0% | 去重 3 | 12.3 块/s
 func FormatEvent(e Event, elapsed time.Duration) string {
 	percent := Percent(e.Count, e.Total)
 	rate := Rate(e.Count, elapsed)
 	var b strings.Builder
 	if e.Kind == Send {
-		fmt.Fprintf(&b, "发送: %d/%d 块 | %.1f%% | %.1f fps", e.Count, e.Total, percent, rate)
+		fmt.Fprintf(&b, "播放: %d/%d 块 | %.1f%% | %.1f fps", e.Count, e.Total, percent, rate)
 		if e.Total > e.Count {
 			fmt.Fprintf(&b, " | 剩余约 %.0fs", ETA(e.Count, e.Total, elapsed))
 		}
 	} else {
-		fmt.Fprintf(&b, "接收: %d/%d 块 | %.1f%% | 去重 %d | %.1f 块/s", e.Count, e.Total, percent, e.Dedup, rate)
+		fmt.Fprintf(&b, "还原: %d/%d 块 | %.1f%% | 去重 %d | %.1f 块/s", e.Count, e.Total, percent, e.Dedup, rate)
 	}
 	return b.String()
 }

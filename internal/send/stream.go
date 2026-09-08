@@ -10,15 +10,15 @@ import (
 	"qrcd/internal/qrcode"
 )
 
-// metaReplayEvery 每发送 N 个数据帧重播一次元数据帧，
-// 保证接收端中途加入或漏收元数据也能初始化会话。
+// metaReplayEvery 每播放 N 个数据帧重播一次元数据帧，
+// 保证还原端中途加入或漏收元数据也能初始化会话。
 const metaReplayEvery = 20
 
 // maxSourceK 单会话 Raptor 源块数上限（DEC-012）。
 // 取 1024 而非 RFC 5053 的理论上限 8192：
 //   - gofountain 在 K=8192 时内部矩阵求解越界 panic（实测）；
 //   - 批量编码总代价 O(K²)，K=1024 编码约 110ms / 解码约 100ms，实时播放不卡顿；
-//   - 超过此上限的载荷由 BuildSessionStreams 自动拆分为多个独立传输会话。
+//   - 超过此上限的载荷由 BuildSessionStreams 自动拆分为多个独立交换会话。
 const maxSourceK = 1024
 
 // StreamItem 一帧播放单元（元数据帧或数据帧），Bytes 为已序列化帧字节。
@@ -28,7 +28,7 @@ type StreamItem struct {
 	Bytes  []byte
 }
 
-// Stream 发送帧流，逐帧产出（惰性生成，避免一次性生成全部帧占用内存）。
+// Stream 播放帧流，逐帧产出（惰性生成，避免一次性生成全部帧占用内存）。
 type Stream struct {
 	load        *payload.Load
 	transferID  [16]byte
@@ -36,19 +36,19 @@ type Stream struct {
 	codec       fec.Codec
 	enc         fec.Encoder
 	sourceK     int // FEC 源符号数（= blockCount）
-	totalData   int // 计划发送的数据帧总数（含冗余）
-	dataSent    int // 已发送的数据帧数
+	totalData   int // 计划播放的数据帧总数（含冗余）
+	dataSent    int // 已播放的数据帧数
 	pendingMeta bool
 	done        bool
 }
 
-// Meta 返回本次传输的元数据。
+// Meta 返回本次交换的元数据。
 func (s *Stream) Meta() *frame.MetaData { return s.meta }
 
-// TransferID 返回本次传输会话 ID。
+// TransferID 返回本次交换会话 ID。
 func (s *Stream) TransferID() [16]byte { return s.transferID }
 
-// TotalData 返回计划发送的数据帧总数（含冗余）。
+// TotalData 返回计划播放的数据帧总数（含冗余）。
 func (s *Stream) TotalData() int { return s.totalData }
 
 // Next 返回下一帧；ok=false 表示流结束。
@@ -93,11 +93,11 @@ func (s *Stream) Next() (item StreamItem, ok bool) {
 	return StreamItem{IsMeta: false, Seq: id, Bytes: frame.MarshalFrame(df)}, true
 }
 
-// BuildStream 构建发送帧流（不渲染 QR）。
+// BuildStream 构建播放帧流（不渲染 QR）。
 // 自动适配块大小：保证单个编码符号 ≤ 单帧 QR 容量（默认 version 20 扣除帧头/CRC）。
 func BuildStream(load *payload.Load, opts Options) (*Stream, error) {
 	if load == nil || len(load.Data) == 0 {
-		return nil, fmt.Errorf("%w: 载荷为空，无需发送", ErrUsage)
+		return nil, fmt.Errorf("%w: 载荷为空，无需输出", ErrUsage)
 	}
 	if opts.BlockSize < 1 {
 		return nil, fmt.Errorf("%w: --block-size 必须 ≥ 1", ErrUsage)
@@ -215,17 +215,17 @@ func BuildStream(load *payload.Load, opts Options) (*Stream, error) {
 }
 
 // BuildSessionStreams 构建多会话分片帧流列表（DEC-012）。
-// 大文件（超过单会话 Raptor 安全上限 maxSourceK）自动拆为 N 个独立传输会话：
+// 大文件（超过单会话 Raptor 安全上限 maxSourceK）自动拆为 N 个独立交换会话：
 //   - 各分片独立 transfer_id、独立 QR 流、独立 name/size/hash（分片级校验）
 //   - 分片大小 partSize = maxSourceK × symbolSize，partTotal = ceil(原始总长 / partSize)
 //   - 每分片分块大小自动取 ceil(分片长 / maxSourceK)，保证单会话源块数 ≤ maxSourceK
 //   - 所有分片均携带 overallHash 作为整体关联键；仅 partIndex=0 额外携带
-//     overallName/overallSize（整体文件信息，接收端拼接落盘用）
+//     overallName/overallSize（整体文件信息，还原端拼接落盘用）
 //
 // 数据不足单会话容量时返回单流（行为与 BuildStream 完全一致，向后兼容）。
 func BuildSessionStreams(load *payload.Load, opts Options) ([]*Stream, error) {
 	if load == nil || len(load.Data) == 0 {
-		return nil, fmt.Errorf("%w: 载荷为空，无需发送", ErrUsage)
+		return nil, fmt.Errorf("%w: 载荷为空，无需输出", ErrUsage)
 	}
 
 	maxPayload, err := maxFramePayload(opts.Version, opts.ECC)
@@ -283,7 +283,7 @@ func BuildSessionStreams(load *payload.Load, opts Options) ([]*Stream, error) {
 			return nil, fmt.Errorf("send: 构建分片 %d/%d 失败: %w", i+1, partTotal, err)
 		}
 		// 注入分片元数据（DEC-012）；所有分片携带 overallHash 作为整体关联键，
-		// 接收端用同一 overallHash 把各分片归入同一传输。仅 part 0 额外携带整体
+		// 还原端用同一 overallHash 把各分片归入同一交换。仅 part 0 额外携带整体
 		// name/size（整体文件信息，拼接落盘用），避免冗余携带大文件名。
 		st.meta.PartIndex = i
 		st.meta.PartTotal = partTotal

@@ -43,8 +43,8 @@ func DecodeImage(img image.Image) (string, error) {
 // PURE_BARCODE 提示告诉 gozxing 图像为纯二维码（无背景/非码内容）。
 // 缺少该提示时，gozxing 的 HybridBinarizer 在较大尺寸（≥~315px）的纯二维码
 // 上会误估模块数（dimension=75 等幻影探测），抛 NotFoundException 丢弃约 8% 的帧
-// （内容与尺寸相关，随传输 ID 变化呈随机失败）。PURE_BARCODE 使检测器在任意尺寸
-// 下稳定还原，对本工具「整帧即二维码」的传输模型成立。见 DEC-006。
+// （内容与尺寸相关，随交换 ID 变化呈随机失败）。PURE_BARCODE 使检测器在任意尺寸
+// 下稳定还原，对本工具「整帧即二维码」的交换模型成立。见 DEC-006。
 func DecodeImageBytes(img image.Image) ([]byte, error) {
 	hints := map[gozxing.DecodeHintType]interface{}{
 		gozxing.DecodeHintType_CHARACTER_SET: charmap.ISO8859_1,

@@ -58,7 +58,7 @@ type noneDecoder struct {
 	data     []byte
 }
 
-// AddSymbol 接收符号，id=0 的符号即为完整数据
+// AddSymbol 还原符号，id=0 的符号即为完整数据
 func (d *noneDecoder) AddSymbol(id uint32, symbol []byte) (bool, error) {
 	if d.received[id] {
 		return d.done, nil

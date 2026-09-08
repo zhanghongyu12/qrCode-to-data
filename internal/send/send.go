@@ -20,12 +20,12 @@ var (
 	// ErrEnv 环境错误（退出码 3，如文件不可读）
 	ErrEnv = errors.New("send: 环境错误")
 	// ErrInterrupted 用户中断（Ctrl+C）
-	ErrInterrupted = errors.New("send: 传输已停止")
+	ErrInterrupted = errors.New("send: 交换已停止")
 )
 
-// Options 发送编排选项，字段与 docs/04_api.md §1.3 对齐。
+// Options 播放编排选项，字段与 docs/04_api.md §1.3 对齐。
 type Options struct {
-	Text string // 直接发送文本（与 File 二选一）
+	Text string // 直接播放文本（与 File 二选一）
 	File string // 文件路径（与 Text 二选一）
 
 	FPS        int     // 二维码播放帧率（帧/秒），默认 10
@@ -44,7 +44,7 @@ type Options struct {
 	ProgressOut io.Writer // 进度/结果输出（默认 os.Stdout）
 }
 
-// Result 发送结果。
+// Result 播放结果。
 type Result struct {
 	Name        string
 	Size        int64
@@ -54,7 +54,7 @@ type Result struct {
 	ShortText   bool
 }
 
-// Send 执行发送编排。
+// Send 执行播放编排。
 func Send(ctx context.Context, opts Options) (*Result, error) {
 	opts = normalize(opts)
 
@@ -75,7 +75,7 @@ func Send(ctx context.Context, opts Options) (*Result, error) {
 		return sendShortText(opts, load)
 	}
 	if load.PayloadType == "text" {
-		fmt.Fprintln(os.Stderr, "提示: 文本超过 200 字节，自动切换为二维码帧流传输。")
+		fmt.Fprintln(os.Stderr, "提示: 文本超过 200 字节，自动切换为二维码帧流。")
 	}
 
 	streams, err := BuildSessionStreams(load, opts)
@@ -93,14 +93,14 @@ func Send(ctx context.Context, opts Options) (*Result, error) {
 		return play(ctx, streams[0], opts, "")
 	}
 
-	// 多会话分片（DEC-012）：大文件自动拆为 N 个独立传输会话，逐会话播放
+	// 多会话分片（DEC-012）：大文件自动拆为 N 个独立交换会话，逐会话播放
 	totalData := 0
 	for _, st := range streams {
 		totalData += st.TotalData()
 	}
 	estSec := float64(totalData) / float64(opts.FPS)
 	if estSec > 30 {
-		fmt.Fprintf(os.Stderr, "提示: 数据较大，已自动拆分为 %d 个会话发送（各会话源块 ≤ %d），预计播放约 %.0f 秒（%d 帧）。可提高 --fps 或 --max-symbol 加速。\n",
+		fmt.Fprintf(os.Stderr, "提示: 数据较大，已自动拆分为 %d 个会话播放（各会话源块 ≤ %d），预计播放约 %.0f 秒（%d 帧）。可提高 --fps 或 --max-symbol 加速。\n",
 			len(streams), maxSourceK, estSec, totalData)
 	}
 	return playSessions(ctx, streams, opts)
@@ -227,9 +227,9 @@ func play(ctx context.Context, stream *Stream, opts Options, label string) (*Res
 	if opts.Out != nil {
 		fmt.Fprint(opts.Out, qrcode.ANSICursorShow)
 	}
-	msg := fmt.Sprintf("发送完成: %d 帧", dataCount)
+	msg := fmt.Sprintf("播放完成: %d 帧", dataCount)
 	if label != "" {
-		msg = fmt.Sprintf("%s 发送完成: %d 帧", label, dataCount)
+		msg = fmt.Sprintf("%s 播放完成: %d 帧", label, dataCount)
 	}
 	ph.Finish(progress.Event{
 		Kind:    progress.Send,
@@ -251,7 +251,7 @@ func play(ctx context.Context, stream *Stream, opts Options, label string) (*Res
 	}, nil
 }
 
-// playSessions 多会话分片发送：逐会话播放，返回整体结果（拼接后文件信息）。
+// playSessions 多会话分片播放：逐会话播放，返回整体结果（拼接后文件信息）。
 func playSessions(ctx context.Context, streams []*Stream, opts Options) (*Result, error) {
 	totalFrames := 0
 	for i, st := range streams {
@@ -272,7 +272,7 @@ func playSessions(ctx context.Context, streams []*Stream, opts Options) (*Result
 	}
 	if opts.ProgressOut != nil {
 		fmt.Fprintf(opts.ProgressOut, "整体 SHA-256: %s\n", res.SHA256)
-		fmt.Fprintf(opts.ProgressOut, "传输完成: 共 %d 帧、%d 个会话，接收端将拼接为 %s（%d 字节）\n",
+		fmt.Fprintf(opts.ProgressOut, "交换完成: 共 %d 帧、%d 个会话，还原端将拼接为 %s（%d 字节）\n",
 			totalFrames, len(streams), res.Name, res.Size)
 	}
 	return res, nil
@@ -283,7 +283,7 @@ func stopPlayback(opts Options) {
 		fmt.Fprint(opts.Out, qrcode.ANSICursorShow)
 	}
 	if opts.ProgressOut != nil {
-		fmt.Fprintln(opts.ProgressOut, "传输已停止（Ctrl+C）")
+		fmt.Fprintln(opts.ProgressOut, "交换已停止（Ctrl+C）")
 	}
 }
 

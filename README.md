@@ -1,38 +1,42 @@
 # qrcd
 
-通过二维码在设备间传文件，**全程不联网**。屏幕显示二维码，摄像头扫描还原。适合气隙环境（无网络/物理隔离）下搬数据。
+通过二维码在设备间传数据，**全程不联网**。屏幕显示二维码，摄像头扫描还原。适合气隙环境（无网络/物理隔离）下搬数据。
 
-## 三个产物（双击即用）
+## 三个安装包（双击即用）
 
-Windows 用户：从 [Releases](https://github.com/zhanghongyu12/qrCode-to-data/releases/latest) 下载 `qrcd.exe`（Android 中继 App 同页下载 `qrcd-app-debug.apk`），**双击运行**——自动起服务并打开浏览器到三端首页：
+按角色拆成三个独立安装包，**包名与界面均使用中性命名**（不体现「发送/接收」）：
 
-| 产物 | 网址 | 作用 |
-|------|------|------|
-| ① 发送端 | http://localhost:8080/sender | 选文件，屏幕逐帧播放二维码 |
-| ② 手机中继 | http://localhost:8080/relay | 手机扫码存下，再重放给接收端 |
-| ③ 接收端 | http://localhost:8080/receiver | 扫码还原并下载文件 |
+| 安装包 | 角色 | 托盘字母 | 用途 |
+|--------|------|----------|------|
+| `qrcd-a.exe` | 播放端 | **A** | 选文件 → 屏幕播放二维码 |
+| `qrcd-b.exe` | 还原端 | **B** | 等手机提交 → 进度 → 保存文件 |
+| `qrcd-relay.apk` | 中继端 | — | 手机扫码 → 提交到电脑 |
 
-手机和电脑需在同一局域网；手机访问时把 `localhost` 换成电脑 IP（双击后窗口里会打印）。关掉那个黑色窗口即停止服务。
+三者均为**桌面原生窗口（WebView2）+ 右下角托盘常驻**：双击即用、无控制台黑窗、不装 Go/任何依赖（需系统 Edge WebView2 运行时，Win10/11 默认自带）。关窗进程不退，托盘右键可「打开桌面端」或「退出」。
 
-> 不装 Go、不装任何依赖，`qrcd.exe` 是独立可执行文件。
+### 用法
 
-### 用法演示
+**气隙流程（播放端 → 手机 → 还原端）**
+1. 电脑 A：双击 `qrcd-a.exe`（托盘 A）→ 选文件 → 点「开始」→ 屏幕放码（建议 fps 8–12、网格 2×2、密度 350、实时扫描）
+2. 手机：装 `qrcd-relay.apk` → 「电脑地址」填 **还原端电脑 IP:8080** → 扫码对准 A 屏幕 → 提交
+3. 电脑 B：双击 `qrcd-b.exe`（托盘 B）→ 自动还原并落盘到 `downloads/`
 
-**直接传（发送端 → 接收端）**
-1. 电脑 A：`qrcd web` → 打开 `/sender` → 选文件
-2. 电脑 B：`qrcd web` → 打开 `/receiver` → 摄像头对准 A 的屏幕 → 自动还原下载
+> 手机与还原端需在同一局域网；手机填还原端电脑的局域网 IP（开「移动热点」时填热点网关地址，如 `192.168.253.1:8080`）。同一台电脑上同时测试两端时，用 `--addr` 错开端口（如还原端 8080、播放端 `--addr :8081`）。
 
-**气隙中转（发送端 → 手机 → 接收端）**
-1. 电脑 A：`qrcd web` → `/sender` 选文件
-2. 手机：`qrcd web` → `/relay` → 扫 A 屏幕的二维码（自动逐帧捕获）→ 点「切换到重放」
-3. 电脑 B：`qrcd web` → `/receiver` → 摄像头对准手机屏幕 → 自动还原下载
-
-## 安装
+## 构建
 
 ```bash
 git clone https://github.com/zhanghongyu12/qrCode-to-data.git
 cd qrCode-to-data
-go build -o qrcd ./cmd/qrcd
+
+# 播放端（A）/ 还原端（B）：-H windowsgui 去掉控制台窗口，role 烘焙进独立安装包
+go build -ldflags "-X main.role=a -H windowsgui" -o qrcd-a.exe ./cmd/qrcd
+go build -ldflags "-X main.role=b -H windowsgui" -o qrcd-b.exe ./cmd/qrcd
+# 完整开发版（三端页签 + CLI send/receive）
+go build -o qrcd.exe ./cmd/qrcd
+
+# Android 中继 App（产物 app/build/outputs/apk/debug/app-debug.apk）
+cd android && ./gradlew.bat assembleDebug
 ```
 
 需要 Go 1.25+。Windows 上若 360 等安全软件拦截编译产物，把项目 `.tmp/` 目录加入信任区。
@@ -68,7 +72,7 @@ qrcd receive --source file ./帧图目录 -o ./out/   # 无摄像头时从图片
 
 - **电脑自己用的页面**（`/sender`、`/receiver`、首页）一律用 `http://localhost:8080`——本机永远通，不受网络切换影响（别用网卡 IP，网络一变会 `ERR_NETWORK_CHANGED`）。
 - **手机**（App 里的服务器地址，或浏览器开 `/relay`）用电脑的局域网 IP；手机和电脑需在同一网络。电脑开「移动热点」时，手机连热点后填热点网关地址（如 `192.168.253.1:8080`）即可。
-- **手机中继 App**（Android）：仓库根目录有 `qrcd-app-debug.apk`（由 `qrcd web` 的 `/dl/app.apk` 提供下载，或 `adb install` 安装），用 ML Kit 解码，服务器地址在 App 内填写（默认 `localhost:8080`，自动补 `http://` 与 `/api/ingest`）。
+- **手机中继 App**（Android）：仓库根目录有 `qrcd-relay.apk`（由 `qrcd web` 的 `/dl/app.apk` 提供下载，或 `adb install` 安装），用 ML Kit 解码。「电脑地址」在 App 内填写（留空会提示填写，自动补 `http://` 与 `/api/ingest`），真机上填还原端电脑 IP:8080。
 - **防火墙**：首次从外部设备访问电脑 8080/8443，Windows 防火墙会拦入站。运行仓库根目录的 `add-firewall.ps1`（右键「用 PowerShell 运行」，UAC 点「是」）一次性放行 8080+8443；经电脑自带「移动热点」共享时通常自动放行，无需此脚本。
 
 ## 已知限制

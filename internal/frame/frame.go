@@ -53,8 +53,8 @@ type MetaData struct {
 	Redundancy  float64 `json:"redundancy"`
 	PayloadType string  `json:"payloadType"`
 	MimeType    string  `json:"mimeType"`
-	// TotalSymbols 发送端计划发送的编码符号总数（含冗余，不含元数据重播帧）。
-	// 接收端用作进度基准，使"已收/总数"与发送端、手机端的计数对齐。
+	// TotalSymbols 播放端计划播放的编码符号总数（含冗余，不含元数据重播帧）。
+	// 还原端用作进度基准，使"已收/总数"与播放端、手机端的计数对齐。
 	TotalSymbols int `json:"totalSymbols,omitempty"`
 	// PartIndex 分片序号（0-based），仅多会话分片时携带（DEC-012）。
 	PartIndex int `json:"partIndex,omitempty"`
@@ -65,7 +65,7 @@ type MetaData struct {
 	// OverallSize 整体总字节数，仅 partIndex=0 携带。
 	OverallSize int64 `json:"overallSize,omitempty"`
 	// OverallHash 整体 SHA-256 校验值，所有分片均携带（整体关联键），
-	// 接收端按此把各分片归入同一传输，拼接完成后按此校验。
+	// 还原端按此把各分片归入同一交换，拼接完成后按此校验。
 	OverallHash string `json:"overallHash,omitempty"`
 }
 

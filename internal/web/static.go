@@ -18,15 +18,15 @@ func (s *Server) handleJSQR(w http.ResponseWriter, r *http.Request) {
 }
 
 // apkCandidates APK 可能所在的固定路径（项目根 / 当前目录 / android 构建输出）。
-// 运行时按顺序查找，找到第一个就提供下载。
+// 运行时按顺序查找，找到第一个就提供保存。
 var apkCandidates = []string{
 	"qrcd-app-debug.apk",
 	"android/app/build/outputs/apk/debug/app-debug.apk",
 	"app-debug.apk",
 }
 
-// handleAPKDownload 提供手机中继 App 的 APK 下载。
-// 手机访问 http://<本机IP>:8080/dl/app.apk 即可直接下载安装。
+// handleAPKDownload 提供手机中继 App 的 APK 保存。
+// 手机访问 http://<本机IP>:8080/dl/app.apk 即可直接保存安装。
 func (s *Server) handleAPKDownload(w http.ResponseWriter, r *http.Request) {
 	for _, p := range apkCandidates {
 		abs, err := filepath.Abs(p)

@@ -10,18 +10,25 @@ import (
 	"os/signal"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"qrcd/internal/desktop"
 	"qrcd/internal/qrcode"
 	"qrcd/internal/receive"
 	"qrcd/internal/send"
+	"qrcd/internal/tray"
 	"qrcd/internal/web"
 )
 
-// exitErr 携带退出码的错误（0 成功/1 传输失败/2 参数错误/3 环境错误）。
+// role 构建期角色：a=播放端（仅选文件放码），b=还原端（仅看进度/保存）。
+// 通过 -ldflags "-X main.role=a" 烘焙进独立安装包；空=完整三端（开发用）。
+var role = ""
+
+// exitErr 携带退出码的错误（0 成功/1 交换失败/2 参数错误/3 环境错误）。
 type exitErr struct {
 	code int
 	err  error
@@ -36,31 +43,25 @@ func paramErr(format string, a ...interface{}) error {
 
 var rootCmd = &cobra.Command{
 	Use:   "qrcd",
-	Short: "二维码数据传输工具",
-	Long: `qrcd — 通过二维码实现纯光学数据传输的 CLI 工具。
+	Short: "二维码工具",
+	Long: `qrcd — 通过二维码实现纯光学数据交换的 CLI 工具。
 
-支持发送（send）与接收（receive）两个子命令：
-  qrcd send <file>        发送文件
-  qrcd send --text <文本>  发送文本
-  qrcd receive            接收数据（默认摄像头）
+支持两个子命令：
+  qrcd send <file>        输出文件
+  qrcd send --text <文本>  输出文本
+  qrcd receive            还原数据（默认摄像头）
 
-纯光学传输无需网络，通过屏幕二维码与摄像头完成数据交换。
-Phase 2 将支持同网直传加速与手机离线中转。`,
+纯光学方式无需网络，通过屏幕二维码与摄像头完成数据交换。
+Phase 2 将支持同网直连加速与手机离线中转。`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// 不带子命令（如双击运行）：自动起 Web 三端并打开浏览器。
+		// 不带子命令（如双击运行）：桌面端原生窗口（播放端/还原端），窗口关闭即退出。
 		addr, _ := cmd.Flags().GetString("addr")
 		if addr == "" {
 			addr = ":8080"
 		}
-		url := "http://localhost" + addr + "/"
-		go openBrowser(url)
-		srv := web.NewServer(addr)
-		if err := srv.Start(cmd.Context()); err != nil && err != http.ErrServerClosed {
-			return &exitErr{code: 3, err: err}
-		}
-		return nil
+		return runDesktop(cmd.Context(), addr)
 	},
 }
 
@@ -77,6 +78,72 @@ func openBrowser(url string) {
 	}
 }
 
+// runDesktop 启动服务 + 右下角托盘 + 桌面端原生窗口（WebView2）。
+// 托盘常驻：关窗口进程不退，可随时从托盘「打开桌面端」重开；「退出」才停服务退出。
+func runDesktop(ctx context.Context, addr string) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	srv := web.NewServer(addr)
+	srvDone := make(chan struct{})
+	go func() {
+		if err := srv.Start(ctx); err != nil && err != http.ErrServerClosed {
+			fmt.Fprintln(os.Stderr, "服务错误:", err)
+		}
+		close(srvDone)
+	}()
+	time.Sleep(600 * time.Millisecond) // 等服务起来
+
+	// 按构建期角色决定打开哪个页面：a=播放端 / b=还原端 / 空=完整三端
+	var page, winTitle, letter string
+	switch role {
+	case "a":
+		page, winTitle, letter = "/sender", "qrcd", "A"
+	case "b":
+		page, winTitle, letter = "/receiver", "qrcd", "B"
+	default:
+		page, winTitle, letter = "/desktop", "qrcd", "Q"
+	}
+	url := "http://localhost" + addr + page
+
+	// 桌面窗口单例守卫：同一时间最多一个窗口
+	var winMu sync.Mutex
+	winOpen := false
+	openWin := func() {
+		winMu.Lock()
+		if winOpen {
+			winMu.Unlock()
+			return
+		}
+		winOpen = true
+		winMu.Unlock()
+		go func() {
+			if !desktop.Open(url, winTitle) {
+				go openBrowser(url) // 无 WebView2 运行时：回退浏览器
+			}
+			winMu.Lock()
+			winOpen = false
+			winMu.Unlock()
+		}()
+	}
+
+	// 首次启动自动打开窗口
+	openWin()
+
+	// 托盘常驻（阻塞直到用户点「退出」）
+	tray.Run(letter, tray.Handlers{
+		OnOpen: openWin,
+		OnQuit: cancel,
+	})
+
+	// 退出：停服务并等待优雅关闭
+	cancel()
+	select {
+	case <-srvDone:
+	case <-time.After(3 * time.Second):
+	}
+	return nil
+}
+
 func init() {
 	// 所有 flag 解析错误统一视为参数错误（退出码 2）
 	rootCmd.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
@@ -85,6 +152,7 @@ func init() {
 	rootCmd.AddCommand(sendCmd())
 	rootCmd.AddCommand(receiveCmd())
 	rootCmd.AddCommand(webCmd())
+	rootCmd.AddCommand(desktopCmd())
 	rootCmd.Flags().StringP("addr", "a", ":8080", "Web 服务监听地址（双击运行时生效）")
 }
 
@@ -92,11 +160,11 @@ func webCmd() *cobra.Command {
 	var addr string
 	cmd := &cobra.Command{
 		Use:   "web",
-		Short: "启动三端 Web 产物（发送端/手机中继/接收端）",
+		Short: "启动三端 Web 产物（播放端/手机中继/还原端）",
 		Long: `启动一个本地 Web 服务，浏览器打开即得三个产物：
-  /sender   发送端：本机选文件，屏幕逐帧播放二维码
-  /relay    手机中继：扫码存下，切换重放给接收端
-  /receiver 接收端：扫码探测与计数
+  /sender   播放端：本机选文件，屏幕逐帧播放二维码
+  /relay    手机中继：扫码存下，切换重放给还原端
+  /receiver 还原端：扫码探测与计数
 
 手机与电脑需在同一局域网；手机访问 http://<电脑IP>:<端口>/relay`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -112,18 +180,31 @@ func webCmd() *cobra.Command {
 	return cmd
 }
 
+func desktopCmd() *cobra.Command {
+	var addr string
+	cmd := &cobra.Command{
+		Use:   "desktop",
+		Short: "桌面端：原生窗口 + 托盘常驻",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDesktop(cmd.Context(), addr)
+		},
+	}
+	cmd.Flags().StringVarP(&addr, "addr", "a", ":8080", "监听地址（如 :8080）")
+	return cmd
+}
+
 func sendCmd() *cobra.Command {
 	var opts send.Options
 	cmd := &cobra.Command{
 		Use:   "send <file>",
-		Short: "发送文件或文本",
-		Long: `通过二维码流发送文件或文本。
+		Short: "输出文件或文本",
+		Long: `通过二维码流输出文件或文本。
 
 示例：
   qrcd send ./backup.tar.gz
   qrcd send --text "Hello World"
 
-发送端在终端逐帧播放二维码；接收端用摄像头（或 --source file|stdin）扫描还原。`,
+播放端在终端逐帧播放二维码；还原端用摄像头（或 --source file|stdin）扫描还原。`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 1 {
 				return paramErr("send: 最多接受一个 <file> 参数，实际 %d 个", len(args))
@@ -147,7 +228,7 @@ func sendCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&opts.Text, "text", "t", "", "直接发送文本（与 <file> 二选一）")
+	cmd.Flags().StringVarP(&opts.Text, "text", "t", "", "直接输出文本（与 <file> 二选一）")
 	cmd.Flags().IntVar(&opts.FPS, "fps", 10, "二维码播放帧率（帧/秒）")
 	cmd.Flags().IntVarP(&opts.Version, "version", "v", 20, "QR 版本上限（1~40），载荷不足自动降级")
 	cmd.Flags().StringVar(&opts.ECC, "ecc", "L", "QR 纠错级别 L/M/Q/H")
@@ -156,8 +237,8 @@ func sendCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.Terminal, "terminal", "ansi", "渲染器：ansi（终端半块）/ ascii（降级）")
 	cmd.Flags().BoolVar(&opts.Invert, "invert", false, "反色（浅色终端背景）")
 	cmd.Flags().BoolVarP(&opts.Quiet, "quiet", "q", false, "关闭进度，只输出最终结果")
-	cmd.Flags().StringVar(&opts.Net, "net", "auto", "同网直传：auto/on/off（Phase 2 未实现）")
-	cmd.Flags().StringVar(&opts.Addr, "addr", "", "指定监听 IP（同网直传，Phase 2）")
+	cmd.Flags().StringVar(&opts.Net, "net", "auto", "同网直连：auto/on/off（Phase 2 未实现）")
+	cmd.Flags().StringVar(&opts.Addr, "addr", "", "指定监听 IP（同网直连，Phase 2）")
 
 	return cmd
 }
@@ -166,8 +247,8 @@ func receiveCmd() *cobra.Command {
 	var opts receive.Options
 	cmd := &cobra.Command{
 		Use:   "receive [路径]",
-		Short: "接收数据",
-		Long: `通过摄像头（默认）或文件/标准输入接收二维码流并还原数据。
+		Short: "还原数据",
+		Long: `通过摄像头（默认）或文件/标准输入读取二维码流并还原数据。
 
 示例：
   qrcd receive
@@ -294,7 +375,7 @@ func main() {
 	}
 }
 
-// exitCodeFor 将错误映射为退出码：0 成功/1 传输失败/2 参数错误/3 环境错误。
+// exitCodeFor 将错误映射为退出码：0 成功/1 交换失败/2 参数错误/3 环境错误。
 func exitCodeFor(err error) int {
 	if err == nil {
 		return 0

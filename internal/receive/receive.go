@@ -12,7 +12,7 @@ import (
 	"qrcd/internal/qrcode"
 )
 
-// Options 接收编排选项，字段与 docs/04_api.md §1.4 对齐。
+// Options 还原编排选项，字段与 docs/04_api.md §1.4 对齐。
 type Options struct {
 	Output     string // 输出目录或完整文件名（默认当前目录）
 	Camera     int    // 摄像头设备号
@@ -31,7 +31,7 @@ type Options struct {
 	ProgressOut io.Writer // 进度输出（默认 os.Stdout）
 }
 
-// Receive 执行接收编排。
+// Receive 执行还原编排。
 func Receive(ctx context.Context, opts Options) (*Result, error) {
 	opts = normalize(opts)
 
@@ -62,7 +62,7 @@ func Receive(ctx context.Context, opts Options) (*Result, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			if opts.ProgressOut != nil {
-				fmt.Fprintln(opts.ProgressOut, "接收已停止（Ctrl+C）")
+				fmt.Fprintln(opts.ProgressOut, "还原已停止（Ctrl+C）")
 			}
 			return nil, ErrInterrupted
 		}
@@ -167,7 +167,7 @@ func printResult(opts Options, res *Result) {
 	if opts.ProgressOut == nil {
 		return
 	}
-	fmt.Fprintf(opts.ProgressOut, "接收完成: %s\n", res.OutputPath)
+	fmt.Fprintf(opts.ProgressOut, "还原完成: %s\n", res.OutputPath)
 	fmt.Fprintf(opts.ProgressOut, "大小: %d 字节\n", res.Size)
 	fmt.Fprintf(opts.ProgressOut, "SHA-256: %s\n", res.SHA256)
 	fmt.Fprintln(opts.ProgressOut, "校验通过")

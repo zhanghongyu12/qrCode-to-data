@@ -38,12 +38,12 @@ $('run').onclick=async()=>{
       $('raw').textContent='画布尺寸='+c.width+'x'+c.height;
     }
   };
-  img.onerror=()=>$('info').textContent='加载 PNG 失败（请先在发送端编码生成帧）';
+  img.onerror=()=>$('info').textContent='加载 PNG 失败（请先在播放端编码生成帧）';
   img.src='/api/frame/0?_='+Date.now();
 };
 </script></body></html>`
 
-// indexPage 首页：三端入口 + 手机 App 下载。
+// indexPage 首页：三端入口 + 手机 App 保存。
 const indexPage = `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -58,17 +58,17 @@ small{color:#888}
 #appqr{margin:12px auto;background:#fff;padding:10px;border-radius:8px;display:none;image-rendering:pixelated}
 </style></head>
 <body>
-<h1>qrcd · 二维码数据传输</h1>
+<h1>qrcd · 二维码工具</h1>
 <p>三端协作，纯光学（屏幕二维码 ↔ 摄像头），全程不联网：</p>
-<a class="appdl" href="/dl/app.apk">📱 下载手机中继 App（Android）</a>
-<div class="scanhint">手机扫下面的二维码可直接打开下载页（手机浏览器访问本地址）：</div>
-<img id="appqr" alt="App下载二维码">
-<button id="showqr" onclick="showAppQR()">显示下载二维码</button>
+<a class="appdl" href="/dl/app.apk">📱 保存手机中继 App（Android）</a>
+<div class="scanhint">手机扫下面的二维码可直接打开保存页（手机浏览器访问本地址）：</div>
+<img id="appqr" alt="App保存二维码">
+<button id="showqr" onclick="showAppQR()">显示保存二维码</button>
 <hr>
-<a href="/sender">① 发送端 —— 选文件，屏幕播放二维码</a>
-<a href="/relay">② 手机中继（网页版） —— 扫码后转发给接收端</a>
-<a href="/receiver">③ 接收端 —— 接收手机上传的帧，重组并下载</a>
-<hr><small>发送端电脑 →（手机扫码）→ 手机 →（网络）→ 接收端电脑。接收端无需摄像头。<br>
+<a href="/sender">① 播放端 —— 选文件，屏幕播放二维码</a>
+<a href="/relay">② 手机中继（网页版） —— 扫码后转发给还原端</a>
+<a href="/receiver">③ 还原端 —— 还原手机提交的帧，重组并保存</a>
+<hr><small>播放端电脑 →（手机扫码）→ 手机 →（网络）→ 还原端电脑。还原端无需摄像头。<br>
 推荐用「手机中继 App」：原生扫码识别率远高于网页 jsQR，无需 HTTPS/证书。</small>
 <script>
 function showAppQR(){
@@ -82,32 +82,43 @@ function showAppQR(){
 </script>
 </body></html>`
 
-// senderPage 发送端：选文件→提交→屏幕逐帧播放 QR。
+// senderPage 播放端：选文件→提交→屏幕逐帧播放 QR。
 const senderPage = `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>qrcd 发送端</title>
-<style>body{font-family:system-ui,sans-serif;text-align:center;margin:0;padding:20px;background:#111;color:#eee}
-h1{font-size:20px} #drop{border:2px dashed #6a6;border-radius:12px;padding:40px;margin:20px auto;max-width:480px;cursor:pointer}
-#drop.hover{background:#1a3a1a} #qr{margin:12px auto;width:min(96vmin,100vw);height:auto;image-rendering:pixelated;background:#fff}
-.bar{background:#333;height:8px;border-radius:4px;margin:12px auto;max-width:400px}
-.bar>i{display:block;height:100%;width:0;background:#5d9;border-radius:4px}
-input[type=range]{width:240px} button{font-size:16px;padding:10px 24px;border:none;border-radius:8px;background:#2a7;color:#fff;cursor:pointer;margin:6px}
+<title>qrcd 播放端</title>
+<style>body{font-family:system-ui,sans-serif;margin:0;padding:16px;background:#111;color:#eee}
+#wrap{display:flex;gap:16px;align-items:flex-start;justify-content:center;flex-wrap:wrap;max-width:1500px;margin:0 auto}
+#qrcol{flex:1 1 auto;min-width:min(58vw,700px);display:flex;justify-content:center}
+#panel{flex:0 0 340px;width:340px;text-align:left;background:#1a1a1a;border-radius:12px;padding:16px;box-sizing:border-box}
+h1{font-size:20px;margin:0 0 8px}
+#drop{border:2px dashed #6a6;border-radius:12px;padding:18px;margin:12px 0;cursor:pointer;text-align:center}
+#drop.hover{background:#1a3a1a}
+#qr{max-width:100%;height:auto;image-rendering:pixelated;background:#fff;border-radius:8px}
+.bar{background:#333;height:8px;border-radius:4px;margin:12px 0}
+.bar>i{display:block;height:100%;width:0;background:#5d9;border-radius:4px;transition:width .15s}
+.ctl{font-size:14px;line-height:2.2;margin:8px 0}
+.ctl label{display:block}
+input[type=range]{width:180px;vertical-align:middle}
+button{font-size:16px;padding:10px 18px;border:none;border-radius:8px;background:#2a7;color:#fff;cursor:pointer;margin:4px 6px 4px 0}
+#info{font-size:13px;color:#9cf;min-height:40px;margin-top:10px;word-break:break-all}
 </style></head>
 <body>
-<h1>qrcd 发送端</h1>
-<p>选文件，屏幕逐帧播放二维码，用另一台设备摄像头扫。</p>
+<div id="wrap">
+<div id="qrcol"><canvas id="qr"></canvas></div>
+<div id="panel">
+<h1>qrcd 播放端</h1>
 <div id="drop"><span id="dlabel">点击或拖入文件</span><input type="file" id="file" hidden></div>
-<div style="font-size:14px;line-height:2">
+<div class="ctl">
 <label>FPS <input type="range" id="fps" min="1" max="30" value="12"><span id="fpsv">12</span></label>
 <label>密度 <select id="density"><option value="151">低 151B</option><option value="350" selected>中 350B</option><option value="600">高 600B</option></select></label>
 <label>网格 <select id="grid"><option value="1">1×1</option><option value="2" selected>2×2</option><option value="3">3×3</option></select></label>
 </div>
-<button id="send">开始发送</button>
-<button id="stop" hidden>停止</button>
+<div><button id="send">开始</button><button id="stop" hidden>停止</button></div>
 <div class="bar"><i id="prog"></i></div>
-<canvas id="qr"></canvas>
-<div id="info"></div>
+<div id="info">选文件后点「开始」</div>
+</div>
+</div>
 <script>
 const $=id=>document.getElementById(id);
 let frames=0,symbols=0,name='',size=0,parts=1,partSizes=[],playing=false,i=0,timer=null;
@@ -119,7 +130,7 @@ $('drop').addEventListener('drop',ev=>{if(ev.dataTransfer.files[0])$('file').fil
 $('file').onchange=e=>{const f=e.target.files[0];if(f)$('dlabel').textContent='已选: '+f.name};
 $('send').onclick=async()=>{
   const fd=new FormData();const f=$('file').files[0];
-  if(f)fd.append('file',f); else fd.append('text',prompt('输入要发送的文本','')||'');
+  if(f)fd.append('file',f); else fd.append('text',prompt('输入文本内容','')||'');
   fd.append('maxSymbol',$('density').value);
   $('info').textContent='编码中…';
   const r=await fetch('/api/encode',{method:'POST',body:fd});
@@ -128,9 +139,9 @@ $('send').onclick=async()=>{
   frames=j.frames;symbols=j.symbols||0;name=j.name;size=j.size;parts=j.parts||1;partSizes=j.partSizes||[];
   i=0;playing=true;
   $('send').hidden=true;$('stop').hidden=false;
-  // symbols = 编码符号总数（含冗余），与接收端进度基准一致；frames 含元数据重播帧，仅内部播放用。
+  // symbols = 编码符号总数（含冗余），与还原端进度基准一致；frames 含元数据重播帧，仅内部播放用。
   $('info').textContent='文件: '+name+' ('+size+'B), 共 '+(symbols||frames)+' 块数据符号（含冗余纠错）'
-    +(parts>1?'，已自动拆分为 '+parts+' 个分片会话（大文件，逐分片播放，接收端自动拼接）':'');
+    +(parts>1?'，已自动拆分为 '+parts+' 个分片会话（大文件，逐分片播放，还原端自动拼接）':'');
   play();
 };
 $('stop').onclick=()=>{playing=false;clearTimeout(timer);$('send').hidden=false;$('stop').hidden=true;$('info').textContent='已停止'};
@@ -146,7 +157,7 @@ function curPart(idx){
   }
   return null;
 }
-// 网格播放：每屏 grid×grid 个 QR（多码并发），App 每帧解出全部上传 → 吞吐=fps×grid²。
+// 网格播放：每屏 grid×grid 个 QR（多码并发），App 每帧解出全部提交 → 吞吐=fps×grid²。
 // 每个 QR 仍稀疏（精度不降），靠数量提速。grid 由下拉选择。
 function play(){
   if(!playing)return;
@@ -165,8 +176,8 @@ function play(){
   function draw(){
     if(!playing)return;
     const c=$('qr');
-    const vmin=Math.min(window.innerWidth,window.innerHeight);
-    const cell=Math.floor(vmin*0.92/grid);
+    const avail=Math.min(document.getElementById('qrcol').clientWidth, window.innerHeight-32);
+    const cell=Math.floor(avail*0.95/grid);
     c.width=cell*grid; c.height=cell*grid;
     const x=c.getContext('2d'); x.imageSmoothingEnabled=false;
     x.fillStyle='#fff'; x.fillRect(0,0,c.width,c.height);
@@ -187,7 +198,37 @@ function play(){
 }
 </script></body></html>`
 
-// relayPage 手机中继：手动「开始扫描」→ 逐帧解码并缓存 → 「发送到 PC」批量 POST 给接收端。
+// desktopPage 桌面端壳：顶部标签页切换 播放端/还原端/手机中继，iframe 复用现有页面。
+const desktopPage = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>qrcd 桌面端</title>
+<style>
+html,body{margin:0;height:100%;font-family:system-ui,sans-serif;background:#111;color:#eee}
+#tabs{display:flex;background:#1a1a1a;border-bottom:1px solid #333;height:46px;box-sizing:border-box;-webkit-app-region:no-drag}
+#tabs button{flex:1;padding:0 12px;background:transparent;border:none;color:#999;font-size:15px;cursor:pointer;font-family:inherit}
+#tabs button:hover{color:#ddd}
+#tabs button.active{color:#fff;background:#222;box-shadow:inset 0 -2px 0 #5d9}
+#frame{width:100%;height:calc(100% - 46px);border:0;display:block;background:#111}
+</style></head>
+<body>
+<div id="tabs">
+<button data-src="/sender" class="active">播放端</button>
+<button data-src="/receiver">还原端</button>
+<button data-src="/relay">手机中继</button>
+</div>
+<iframe id="frame" src="/sender"></iframe>
+<script>
+const tabs=[].slice.call(document.querySelectorAll('#tabs button'));
+tabs.forEach(function(t){t.onclick=function(){
+  tabs.forEach(function(x){x.classList.remove('active')});
+  t.classList.add('active');
+  document.getElementById('frame').src=t.getAttribute('data-src');
+}});
+</script>
+</body></html>`
+
+// relayPage 手机中继：手动「开始扫描」→ 逐帧解码并缓存 → 「提交到电脑」批量 POST 给还原端。
 const relayPage = `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
@@ -208,17 +249,17 @@ input{font-size:14px;padding:8px;border-radius:6px;border:1px solid #555;backgro
 </style></head>
 <body>
 <h1>qrcd 手机中继</h1>
-<div class="mode" id="mode">① 扫码：对准发送端屏幕上的二维码</div>
-<div><input id="recvurl" placeholder="接收端地址（留空=本机）" value=""></div>
+<div class="mode" id="mode">① 扫码：对准播放端屏幕上的二维码</div>
+<div><input id="recvurl" placeholder="还原端地址（留空=本机）" value=""></div>
 <div id="camwrap">
 <video id="cam" autoplay playsinline muted></video>
 <canvas id="overlay"></canvas>
 </div>
 <canvas id="out" hidden></canvas>
 <div class="bar"><i id="prog"></i></div>
-<div id="info">点「开始扫描」对准发送端二维码</div>
+<div id="info">点「开始扫描」对准播放端二维码</div>
 <button id="scanbtn">开始扫描</button>
-<button id="sendbtn" disabled>发送到 PC</button>
+<button id="sendbtn" disabled>提交到电脑</button>
 <button id="clear">清空</button>
 <div class="hint" id="hint"></div>
 <div id="lib">QR 解码库加载中…</div>
@@ -226,10 +267,10 @@ input{font-size:14px;padding:8px;border-radius:6px;border:1px solid #555;backgro
 <script>
 const $=id=>document.getElementById(id);
 const video=$('cam'),out=$('out'),cx=out.getContext('2d'),ov=$('overlay'),ox=ov.getContext('2d');
-// 默认转发目标 = 本页所在服务器（即打开此页的接收端 PC）
+// 默认转发目标 = 本页所在服务器（即打开此页的还原端 PC）
 let recvUrl=location.origin+'/api/ingest';
 let seen=new Set(),scanning=false,buf=[],scanTicks=0,lastDecodeTick=0;
-// 上传并发流水线（阶段1）：边扫边发，固定并发度，丢帧由喷泉码兜底
+// 提交并发流水线（阶段1）：边扫边发，固定并发度，丢帧由喷泉码兜底
 let upQ=[],inFlight=0,uploaded=0,recvTotal=0,recvDone=false,CONCURRENCY=6;
 // 阶段2：rAF 驱动 + 防重入，消除 setTimeout 120ms 人为节流
 let ticking=false,rafId=0;
@@ -294,7 +335,7 @@ async function startScan(){
     ov.width=video.clientWidth;ov.height=video.clientHeight;
     scanning=true;scanTicks=0;lastDecodeTick=0;
     $('scanbtn').textContent='停止扫描';
-    $('info').textContent='扫描中… 对准发送端二维码（让二维码占满大部分画面）';
+    $('info').textContent='扫描中… 对准播放端二维码（让二维码占满大部分画面）';
     $('hint').textContent='';
     tickRaf();
   }catch(e){$('info').textContent='摄像头错误: '+e.message}
@@ -304,7 +345,7 @@ function stopScan(){
   if(rafId){cancelAnimationFrame(rafId);rafId=0}
   if(video.srcObject){video.srcObject.getTracks().forEach(tr=>tr.stop());video.srcObject=null}
   $('scanbtn').textContent='开始扫描';
-  if(buf.length)$('info').textContent='已停止，共捕获 '+buf.length+' 块，点「发送到 PC」上传';
+  if(buf.length)$('info').textContent='已停止，共捕获 '+buf.length+' 块，点「提交到电脑」提交';
   else $('info').textContent='已停止，未捕获到任何帧';
 }
 // overlay 坐标系 = 视频显示像素；box 来自视频原始坐标，需按显示比例换算
@@ -354,7 +395,7 @@ async function tick(){
       const key=bytes.length+':'+bytes.slice(0,32).join(',');
       if(!seen.has(key)){
         seen.add(key);lastDecodeTick=scanTicks;
-        buf.push(bytes);enqueueUpload(bytes); // 边扫边发：直接上传原始帧字节
+        buf.push(bytes);enqueueUpload(bytes); // 边扫边发：直接提交原始帧字节
         $('sendbtn').disabled=false;
       }
       if(box)drawBox(box);
@@ -370,7 +411,7 @@ function tickRaf(){
   if(!ticking){ticking=true;tick().then(()=>{ticking=false}).catch(()=>{ticking=false})}
   rafId=requestAnimationFrame(tickRaf);
 }
-// enqueueUpload 把一帧丢进上传队列并立即调度（边扫边发，无需等"扫完"）。
+// enqueueUpload 把一帧丢进提交队列并立即调度（边扫边发，无需等"扫完"）。
 function enqueueUpload(bytes){upQ.push(bytes);pumpUpload()}
 // pumpUpload 保持 CONCURRENCY 个 in-flight；队列空则停，响应回来递归续发。
 // 失败帧丢弃（喷泉码兜底），不重试不阻塞。
@@ -384,21 +425,21 @@ function pumpUpload(){
       const denom=Math.max(1,recvTotal||buf.length);
       $('prog').style.width=Math.min(100,uploaded/denom*100)+'%';
       const rcv=(j&&j.count)?j.count:'?';
-      if(recvDone){$('info').textContent='✓ 上传完成，接收端已还原（已发 '+uploaded+'，接收端 '+rcv+'/'+(recvTotal||'?')+'）';upQ.length=0;return}
-      $('info').textContent='边扫边发：已扫 '+buf.length+' 已发 '+uploaded+' 在飞 '+inFlight+'（接收端 '+rcv+'/'+(recvTotal||'?')+'）';
+      if(recvDone){$('info').textContent='✓ 提交完成，还原端已还原（已发 '+uploaded+'，还原端 '+rcv+'/'+(recvTotal||'?')+'）';upQ.length=0;return}
+      $('info').textContent='边扫边发：已扫 '+buf.length+' 已发 '+uploaded+' 在飞 '+inFlight+'（还原端 '+rcv+'/'+(recvTotal||'?')+'）';
       pumpUpload();
     }).catch(e=>{
       inFlight--; // 失败帧丢弃，喷泉码兜底；继续 pump
-      $('info').textContent='上传失败一帧（已发 '+uploaded+'，跳过）: '+e.message;
+      $('info').textContent='提交失败一帧（已发 '+uploaded+'，跳过）: '+e.message;
       pumpUpload();
     });
   }
 }
-// sendAll 手动触发/重启上传（tick 已自动边扫边发，此为保险与状态查询）。
+// sendAll 手动触发/重启提交（tick 已自动边扫边发，此为保险与状态查询）。
 function sendAll(){
-  if(buf.length===0&&upQ.length===0&&inFlight===0){$('info').textContent='没有可发送的帧，先扫描';return}
+  if(buf.length===0&&upQ.length===0&&inFlight===0){$('info').textContent='没有可播放的帧，先扫描';return}
   pumpUpload();
-  $('info').textContent='上传中：已扫 '+buf.length+' 已发 '+uploaded+' 在飞 '+inFlight+'（接收端 '+(recvTotal||'?')+'）';
+  $('info').textContent='提交中：已扫 '+buf.length+' 已发 '+uploaded+' 在飞 '+inFlight+'（还原端 '+(recvTotal||'?')+'）';
 }
 $('recvurl').onchange=e=>{const v=e.target.value.trim().replace(/\/$/,'');if(v)recvUrl=v+'/api/ingest'};
 $('clear').onclick=()=>{seen.clear();buf.length=0;upQ.length=0;inFlight=0;uploaded=0;recvTotal=0;recvDone=false;$('prog').style.width=0;$('sendbtn').disabled=true;$('info').textContent='已清空，重新扫描';$('hint').textContent=''};
@@ -406,12 +447,12 @@ $('scanbtn').onclick=()=>{scanning?stopScan():startScan()};
 $('sendbtn').onclick=sendAll;
 </script></body></html>`
 
-// receiverPage 网络接收端：无需摄像头。手机中继把扫到的 QR 帧字节 POST 到 /api/ingest，
-// 服务端用 receive.Processor 重组；本页轮询 /api/recv/status 显示进度，完成后下载/提示落盘路径。
+// receiverPage 网络还原端：无需摄像头。手机中继把扫到的 QR 帧字节 POST 到 /api/ingest，
+// 服务端用 receive.Processor 重组；本页轮询 /api/recv/status 显示进度，完成后保存/提示落盘路径。
 const receiverPage = `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>qrcd 接收端</title>
+<title>qrcd 还原端</title>
 <style>body{font-family:system-ui,sans-serif;text-align:center;margin:0;padding:20px;background:#111;color:#eee}
 h1{font-size:20px} .hint{color:#9cf;font-size:14px;margin:12px}
 .bar{background:#333;height:10px;border-radius:5px;margin:16px auto;max-width:420px}
@@ -420,19 +461,19 @@ button{font-size:16px;padding:12px 24px;border:none;border-radius:8px;background
 #info{min-height:48px;font-size:15px} .path{font-family:monospace;background:#222;padding:8px;border-radius:6px;display:inline-block;color:#5d9}
 </style></head>
 <body>
-<h1>qrcd 接收端</h1>
-<div class="hint">本机已就绪，等待手机中继上传帧。<br>在手机上打开 <b>本机IP:8080/relay</b> 扫发送端二维码即可。</div>
+<h1>qrcd 还原端</h1>
+<div class="hint">本机已就绪，等待手机中继提交帧。<br>在手机上打开 <b>本机IP:8080/relay</b> 扫播放端二维码即可。</div>
 <div class="bar"><i id="prog"></i></div>
-<div id="info">等待上传…</div>
-<button id="save" hidden>下载文件</button>
-<button id="reset">重置（接收新文件）</button>
+<div id="info">等待数据…</div>
+<button id="save" hidden>保存文件</button>
+<button id="reset">重置（还原新文件）</button>
 <script>
 const $=id=>document.getElementById(id);
 let timer=setInterval(poll,500);
 async function poll(){
   try{
     const r=await fetch('/api/recv/status');const j=await r.json();
-    if(!j.ready){$('info').textContent='等待上传…';return}
+    if(!j.ready){$('info').textContent='等待数据…';return}
     if(j.total>0)$('prog').style.width=Math.min(100,j.count/Math.max(1,j.total)*100)+'%';
     if(j.done&&j.name){
       $('info').innerHTML='✓ 还原成功：<b>'+j.name+'</b> ('+j.size+'B)｜已收 '+(j.count||0)+'/'+(j.total||'?')+' 块<br>已落盘：<span class="path">'+j.path+'</span><br>SHA-256: '+j.sha256.slice(0,16)+'…';
@@ -442,5 +483,5 @@ async function poll(){
     }
   }catch(e){$('info').textContent='查询失败: '+e.message}
 }
-$('reset').onclick=()=>{fetch('/api/recv/status').then(()=>{$('prog').style.width=0;$('info').textContent='等待上传…';$('save').hidden=true})};
+$('reset').onclick=()=>{fetch('/api/recv/status').then(()=>{$('prog').style.width=0;$('info').textContent='等待数据…';$('save').hidden=true})};
 </script></body></html>`

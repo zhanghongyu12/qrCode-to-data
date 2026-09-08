@@ -19,16 +19,16 @@ import (
 	"qrcd/internal/send"
 )
 
-// session 一次发送会话：预生成全部帧（用于发送端逐帧取 PNG）。
+// session 一次播放会话：预生成全部帧（用于播放端逐帧取 PNG）。
 // 多会话分片（DEC-012）时 items 为各分片帧按序拼接（扁平索引），
-// partSizes[i] 记录第 i 个分片的帧数，供发送端展示"分片 X/Y"。
+// partSizes[i] 记录第 i 个分片的帧数，供播放端展示"分片 X/Y"。
 type session struct {
 	items     []*send.StreamItem
 	partSizes []int
 	current   int
 }
 
-// recvSession 网络接收会话：手机中继把扫到的 QR 帧字节 POST 到 /api/ingest。
+// recvSession 网络还原会话：手机中继把扫到的 QR 帧字节 POST 到 /api/ingest。
 type recvSession struct {
 	proc  *receive.Processor
 	done  bool
@@ -70,6 +70,7 @@ func tlsPort(addr string) string {
 func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/desktop", s.handleDesktop)
 	mux.HandleFunc("/sender", s.handleSender)
 	mux.HandleFunc("/relay", s.handleRelay)
 	mux.HandleFunc("/receiver", s.handleReceiver)
@@ -113,15 +114,20 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	fmt.Printf("\nqrcd Web 三端已启动:\n")
-	fmt.Printf("  发送端(本机选文件→播放 QR): http://localhost%s/sender\n", s.addr)
-	fmt.Printf("  接收端(等手机上传→还原):    http://localhost%s/receiver\n", s.addr)
-	fmt.Printf("  手机App下载:                http://<本机IP>%s/dl/app.apk\n", s.addr)
-	fmt.Printf("  首页(含App下载二维码):      http://localhost%s/\n", s.addr)
+	fmt.Printf("  播放端(本机选文件→播放 QR): http://localhost%s/sender\n", s.addr)
+	fmt.Printf("  还原端(等手机提交→还原):    http://localhost%s/receiver\n", s.addr)
+	fmt.Printf("  手机App保存:                http://<本机IP>%s/dl/app.apk\n", s.addr)
+	fmt.Printf("  首页(含App保存二维码):      http://localhost%s/\n", s.addr)
 	if httpsAddr != "" {
 		fmt.Printf("  手机中继(扫码→转发,需HTTPS): https://<本机IP>%s/relay\n", httpsAddr)
 		fmt.Println("  手机首次访问会提示证书不安全，点「高级/继续访问」即可开摄像头。")
 	}
 	return s.srv.ListenAndServe()
+}
+
+func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	io.WriteString(w, desktopPage)
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -133,7 +139,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, indexPage)
 }
 
-// handleEncode 接收文件/文本，BuildSessionStreams 预生成全部帧 PNG 序列。
+// handleEncode 还原文件/文本，BuildSessionStreams 预生成全部帧 PNG 序列。
 // 大文件自动多会话分片（DEC-012），各分片帧按序拼成扁平 items，partSizes 记录分片边界。
 func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -160,12 +166,12 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if data == nil {
-		http.Error(w, "请上传 file 或填 text", 400)
+		http.Error(w, "请提交 file 或填 text", 400)
 		return
 	}
 
 	load := &payload.Load{Data: data, Name: name, PayloadType: pt, MimeType: mime}
-	// 单帧字节密度可调（发送端表单 maxSymbol）：默认 350（v12-L，约 2.3× 于旧的 151）。
+	// 单帧字节密度可调（播放端表单 maxSymbol）：默认 350（v12-L，约 2.3× 于旧的 151）。
 	// 上限 666 = v15-L byte-mode 容量；更高需提 Version（更密更难扫，慎用）。
 	maxSymbol := 350
 	if v := r.FormValue("maxSymbol"); v != "" {
@@ -257,7 +263,7 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 	png.Encode(w, code.Image(8))
 }
 
-// handleQRCode /api/qrcode?d=<文本> 返回任意文本的标准 QR PNG（如 App 下载链接二维码）。
+// handleQRCode /api/qrcode?d=<文本> 返回任意文本的标准 QR PNG（如 App 保存链接二维码）。
 func (s *Server) handleQRCode(w http.ResponseWriter, r *http.Request) {
 	d := r.URL.Query().Get("d")
 	if d == "" {
@@ -313,7 +319,7 @@ func (s *Server) handleScanTest(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, scanTestPage)
 }
 
-// handleIngest 接收中继手机 POST 上来的单帧原始字节（= QR 解码出的 QRCD 帧字节），
+// handleIngest 还原中继手机 POST 上来的单帧原始字节（= QR 解码出的 QRCD 帧字节），
 // 喂给 receive.Processor 重组；收齐后落盘到 downloads/ 目录。
 func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -361,7 +367,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"ok": true, "count": count, "total": total, "done": rs.done})
 }
 
-// handleRecvStatus 网络接收进度。
+// handleRecvStatus 网络还原进度。
 func (s *Server) handleRecvStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	s.rmu.Lock()
@@ -386,7 +392,7 @@ func (s *Server) handleRecvStatus(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// handleRecvFile 下载已还原的文件。
+// handleRecvFile 保存已还原的文件。
 func (s *Server) handleRecvFile(w http.ResponseWriter, r *http.Request) {
 	s.rmu.Lock()
 	rs := s.recv
