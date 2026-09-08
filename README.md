@@ -12,7 +12,7 @@
 | `qrcd-b.exe` | 还原端 | **B** | 等手机提交 → 进度 → 保存文件 |
 | `qrcd-relay.apk` | 中继端 | — | 手机扫码 → 提交到电脑 |
 
-三者均为**桌面原生窗口（WebView2）+ 右下角托盘常驻**：双击即用、无控制台黑窗、不装 Go/任何依赖（需系统 Edge WebView2 运行时，Win10/11 默认自带）。关窗进程不退，托盘右键可「打开桌面端」或「退出」。
+其中 `qrcd-a.exe` / `qrcd-b.exe` 为**桌面原生窗口（WebView2）+ 右下角托盘常驻**：双击即用、无控制台黑窗、不装 Go/任何依赖（需系统 Edge WebView2 运行时，Win10/11 默认自带）。关窗进程不退，托盘右键可「打开桌面端」或「退出」；`qrcd-relay.apk` 为 Android 手机 App。
 
 ### 用法
 
@@ -29,7 +29,7 @@
 git clone https://github.com/zhanghongyu12/qrCode-to-data.git
 cd qrCode-to-data
 
-# 播放端（A）/ 还原端（B）：-H windowsgui 去掉控制台窗口，role 烘焙进独立安装包
+# 播放端（A）/ 还原端（B）：-H windowsgui 去掉控制台窗口，role 编译进独立安装包
 go build -ldflags "-X main.role=a -H windowsgui" -o qrcd-a.exe ./cmd/qrcd
 go build -ldflags "-X main.role=b -H windowsgui" -o qrcd-b.exe ./cmd/qrcd
 # 完整开发版（三端页签 + CLI send/receive）

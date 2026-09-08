@@ -13,7 +13,7 @@
 - DEC-009 `frame.MetaData.TotalSymbols`：发送端填充含冗余的编码符号总数；接收端进度基准改用之，还原完成后继续累计已收使三端计数对齐；手机端只对数据帧（type=0x02）计数；发送端显示数据符号数；`/api/encode` 响应增 `symbols`。新增单测 `TestPostDecodeCounting`。
 - DEC-013 App 录像模式：CameraX VideoCapture 录制 + MediaMetadataRetriever 抽帧离线解析，将扫描与解码解耦。MainActivity.kt 新增录像模式（recordBtn 绑定 ↔ 切换录像/停止；VideoCapture<Recorder> + Quality.SD + 不录音；多段录像累积序号 recordSeq）。停止后 parseExecutor 后台线程 MediaMetadataRetriever 按 ~66ms 步进抽帧 → ML Kit 解码 → 共享 ingestBarcodeBytes 去重+缓存+计数。实时扫描与录像解析共用同一去重/缓存路径。onDestroy 补 parseExecutor.shutdown()。sendBuffer 上传期间禁用 recordBtn。
 
-- DEC-014 桌面端原生窗口 + 系统托盘 + 三安装包拆分 + 中性命名：桌面端改用 `go-webview2` 原生窗口（纯 Go 无 cgo，`-H windowsgui` 编译去控制台黑窗）+ `getlantern/systray` 右下角托盘常驻（关窗不退、右键「打开桌面端/退出」）。按角色拆三个独立安装包——`qrcd-a.exe`（播放端/role=a）、`qrcd-b.exe`（还原端/role=b）、`qrcd-relay.apk`（中继），桌面 role 经 `-ldflags "-X main.role=…"` 烘焙，托盘图标为中心大写字母（A/B/Q，内联生成 32×32 ICO）。包名与界面脱敏：发送端→播放端、接收端→还原端、发送→播放/输出、接收→还原、传输→交换、上传→提交、下载→保存。
+- DEC-014 桌面端原生窗口 + 系统托盘 + 三安装包拆分 + 中性命名：桌面端改用 `go-webview2` 原生窗口（纯 Go 无 cgo，`-H windowsgui` 编译去控制台黑窗）+ `getlantern/systray` 右下角托盘常驻（关窗不退、右键「打开桌面端/退出」）。按角色拆三个独立安装包——`qrcd-a.exe`（播放端/role=a）、`qrcd-b.exe`（还原端/role=b）、`qrcd-relay.apk`（中继），桌面 role 经 `-ldflags "-X main.role=…"` 编译，托盘图标为中心大写字母（A/B/Q，内联生成 32×32 ICO）。包名与界面脱敏：发送端→播放端、接收端→还原端、发送→播放/输出、接收→还原、传输→交换、上传→提交、下载→保存。
 
 ### Fixed
 
