@@ -12,7 +12,7 @@
 | `qrcd-b.exe` | 还原端 | **B** | 等手机提交 → 进度 → 保存文件 |
 | `qrcd-relay.apk` | 中继端 | — | 手机扫码 → 提交到电脑 |
 
-其中 `qrcd-a.exe` / `qrcd-b.exe` 为**桌面原生窗口（WebView2）+ 右下角托盘常驻**：双击即用、无控制台黑窗、不装 Go/任何依赖（需系统 Edge WebView2 运行时，Win10/11 默认自带）。关窗进程不退，托盘右键可「打开桌面端」或「退出」；`qrcd-relay.apk` 为 Android 手机 App。
+其中 `qrcd-a.exe` / `qrcd-b.exe` 为**桌面原生窗口（WebView2）+ 右下角托盘常驻**：双击即用、无控制台黑窗、无需安装 Go 或任何依赖（需系统 Edge WebView2 运行时，Win10/11 默认自带）。关窗进程不退，托盘右键可「打开桌面端」或「退出」；`qrcd-relay.apk` 为 Android 手机 App。
 
 ### 用法
 
@@ -60,9 +60,9 @@ qrcd receive --source file ./帧图目录 -o ./out/   # 无摄像头时从图片
 ## 实现细节
 
 **接收/中继管线（`internal/web/pages.go` 的 relay 页）**
-- **边扫边发**：扫到一帧立即入队上传，`pumpUpload` 保持并发度 6 的 in-flight，无需「扫完再发」；失败帧丢弃由喷泉码兜底，不重试不阻塞。
+- **边扫边发**：扫到一帧立即入队上传，`pumpUpload` 保持 6 路 in-flight 上传，无需「扫完再发」；失败帧丢弃由喷泉码兜底，不重试不阻塞。
 - **rAF 驱动扫描**：`requestAnimationFrame` + 防重入，移除了旧的 `setTimeout 120ms`（≈8fps 硬上限）；合成摄像头实测管线吞吐 ~32–38fps（旧基线 ~8fps，约 4×）。
-- **jsQR 移入 Web Worker**：Blob-URL worker 经 `importScripts(location.origin+'/jsQR.js')` 加载 jsQR，主线程不被同步解码阻塞；worker 出错自动置空回退同步 jsQR。
+- **jsQR 移入 Web Worker**：Blob-URL worker 经 `importScripts(location.origin+'/jsQR.js')` 加载 jsQR，主线程不被同步解码阻塞；worker 出错自动置空并回退到同步 jsQR。
 - **二进制 byte-mode QR**：帧字节直接入 QR（无 base64 膨胀），relay 经 jsQR 的 `binaryData` 可靠还原二进制字节；BarcodeDetector 的 `rawValue` 对二进制不可靠，仅作回退。端到端实测：合成摄像头喂真实二进制帧 → relay → `/api/ingest` → Raptor 还原，SHA-256 精确匹配。
 - **ECC 用 L**：`handleFrame` 用 QR 纠错等级 L（7%），帧内 ECC 与喷泉码分工（corruption vs erasure），L 最大化单帧稀疏度（更易扫），丢帧由喷泉码兜底。
 
