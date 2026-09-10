@@ -6,6 +6,24 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-10
+
+### Added
+
+- USB 直连：手机免填 IP，走 adb reverse 隧道提交到还原端；两端连通状态检测、失败切 WiFi 重发
+- 连续传输：手机边扫边发，还原端按序号去重累积；传输历史持久化、补录重发
+- 录像抽帧解码改回手机端 ML Kit（gozxing 解不动录屏照片），边解边发
+- 还原端 USB 隧道自动建立与状态接口（`cmd/qrcd/usbreverse.go`）
+
+### Fixed
+
+- 多分片文件进度错位：新增 `TotalSymbolsOverall` 对齐三端「已收/总数」
+- 还原端「重置」按钮不生效：新增 `/api/recv/reset` 清空会话
+- gozxing 宽松解码（PURE_BARCODE 优先，回退全图扫描）
+- 流式上传并发 6→32，减少网格模式丢帧
+
+## [0.3.0] - 2026-09-08
+
 ### Added
 
 - DEC-007 手机端原生 Android App：CameraX + ML Kit Barcode（rawBytes 直出二进制帧）+ OkHttp 转发，三按钮手动触发（扫描/发送/清空），即时反馈「已捕获 N 块」。取代 jsQR 网页方案（DEC-002 手机端部分废弃）。Web 服务增 `/dl/app.apk`（APK 下载）、`/`（首页含 APK 下载二维码）、`/api/qrcode`（生成下载链接二维码）、`/scantest`（jsQR 自检）。
@@ -63,4 +81,6 @@
 
 ## 版本历史
 
-（暂无正式发布版本）
+- [0.4.0] - 2026-09-10（USB 直连 + 连续传输 + 录像抽帧修复）
+- [0.3.0] - 2026-09-08（桌面端三安装包 + 系统托盘 + 中性命名）
+- v0.1.0 / stage-6-handoff 为早期阶段标签
