@@ -294,6 +294,16 @@ func BuildSessionStreams(load *payload.Load, opts Options) ([]*Stream, error) {
 		}
 		streams = append(streams, st)
 	}
+
+	// 整体符号总数：所有分片 TotalSymbols 之和，作为还原端进度基准（DEC-014），
+	// 使三端"已收/总数"口径一致（发送端 /api/encode 的 symbols 即为此值）。
+	overallTotal := 0
+	for _, st := range streams {
+		overallTotal += st.TotalData()
+	}
+	for _, st := range streams {
+		st.meta.TotalSymbolsOverall = overallTotal
+	}
 	return streams, nil
 }
 

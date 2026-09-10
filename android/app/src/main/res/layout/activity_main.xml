@@ -35,6 +35,22 @@
         android:background="#111"
         app:layout_constraintBottom_toBottomOf="parent">
 
+        <Switch
+            android:id="@+id/usbSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="USB 直连（连电脑，免填 IP）"
+            android:textColor="#eee"
+            android:textSize="13sp" />
+
+        <Switch
+            android:id="@+id/liveSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="实时传输（边扫边发）"
+            android:textColor="#eee"
+            android:textSize="13sp" />
+
         <EditText
             android:id="@+id/recvUrl"
             android:layout_width="match_parent"
@@ -107,6 +123,28 @@
                 android:layout_marginStart="8dp"
                 android:text="清空" />
         </LinearLayout>
+
+        <TextView
+            android:id="@+id/historyTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="传输记录"
+            android:textColor="#9cf"
+            android:textSize="13sp"
+            android:gravity="center" />
+
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:maxHeight="140dp">
+            <LinearLayout
+                android:id="@+id/historyList"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+        </ScrollView>
 
         <TextView
             android:id="@+id/libStatus"

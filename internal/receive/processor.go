@@ -198,11 +198,14 @@ func (p *Processor) Process(frameBytes []byte) error {
 		}
 		sess.SetMeta(meta)
 		// 进度基准：播放端计划播放的编码符号总数（含冗余），使还原端"已收/总数"
-		// 与播放端、手机端的计数尽量对齐。旧版本用 BlockCount（K，源块数），
-		// 导致喷泉码凑齐 K 即完成、计数停在 K，与播放端/手机端对不上。
-		if meta.TotalSymbols > 0 {
+		// 与播放端、手机端的计数尽量对齐。多会话分片时用整体总数（所有分片之和），
+		// 否则"已收"跨分片累计、"总数"却只有单分片，出现 2000/1000 这类错位。
+		switch {
+		case meta.TotalSymbolsOverall > 0:
+			p.expected = meta.TotalSymbolsOverall
+		case meta.TotalSymbols > 0:
 			p.expected = meta.TotalSymbols
-		} else {
+		default:
 			p.expected = meta.BlockCount
 		}
 		if err := fs.ensureDecoder(meta); err != nil {

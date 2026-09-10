@@ -67,6 +67,9 @@ type MetaData struct {
 	// OverallHash 整体 SHA-256 校验值，所有分片均携带（整体关联键），
 	// 还原端按此把各分片归入同一交换，拼接完成后按此校验。
 	OverallHash string `json:"overallHash,omitempty"`
+	// TotalSymbolsOverall 多会话分片时所有分片 TotalSymbols 之和（整体进度基准），
+	// 使还原端"已收/总数"与播放端"共 N 块"一致，避免"已收"跨分片累计而"总数"只算单分片。
+	TotalSymbolsOverall int `json:"totalSymbolsOverall,omitempty"`
 }
 
 // Header 帧头结构（32 字节）

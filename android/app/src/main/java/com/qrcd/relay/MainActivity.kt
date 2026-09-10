@@ -8,6 +8,9 @@ import android.os.Bundle
 import android.util.Log
 import android.util.Size
 import android.view.View
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -43,6 +46,18 @@ class MainActivity : AppCompatActivity() {
     private lateinit var previewView: PreviewView
     private lateinit var overlay: BoxOverlay
     private lateinit var recvUrlEdit: android.widget.EditText
+    private lateinit var usbSwitch: android.widget.Switch
+    private lateinit var liveSwitch: android.widget.Switch
+
+    // 实时流式传输（边扫边传 / 录像抽帧传图）共享状态
+    @Volatile private var liveUpload = false     // 实时扫描边扫边传激活中
+    @Volatile private var liveUrl = ""           // 实时扫描目标 URL（/api/ingest）
+    @Volatile private var liveDone = false       // 本次流式会话已完成
+    @Volatile private var uploadedCount = 0
+    @Volatile private var recvTotalLive = 0
+    private val inflight = java.util.concurrent.atomic.AtomicInteger(0)
+    private var videoStreaming = false           // 录像抽帧传图进行中
+    @Volatile private var failCount = 0          // 连续失败计数（判断开）
     private lateinit var infoText: android.widget.TextView
     private lateinit var hintText: android.widget.TextView
     private lateinit var progressBar: android.widget.ProgressBar
@@ -80,6 +95,18 @@ class MainActivity : AppCompatActivity() {
     private val buf = java.util.concurrent.CopyOnWriteArrayList<ByteArray>()
     @Volatile private var sending = false
 
+    // 传输历史：每次「提交到电脑」成功后归档，可重新提交
+    data class TransferRecord(
+        val id: Long,
+        val label: String,
+        val frames: List<ByteArray>,
+        val dataCount: Int,
+        var status: String
+    )
+    private val history = ArrayList<TransferRecord>()
+    private var historySeq = 0L
+    private lateinit var historyList: android.widget.LinearLayout
+
     // 录像相关：VideoCapture 绑定、当前 Recording、输出文件、录制序号
     private var videoCapture: VideoCapture<Recorder>? = null
     private var activeRecording: Recording? = null
@@ -93,6 +120,18 @@ class MainActivity : AppCompatActivity() {
         previewView = findViewById(R.id.preview)
         overlay = findViewById(R.id.overlay)
         recvUrlEdit = findViewById(R.id.recvUrl)
+        usbSwitch = findViewById(R.id.usbSwitch)
+        usbSwitch.setOnCheckedChangeListener { _, checked ->
+            recvUrlEdit.isEnabled = !checked
+            if (checked) {
+                hintText.text = "USB 直连：数据走 USB 线到接收端电脑"
+                testUsbConnection()
+            }
+        }
+        liveSwitch = findViewById(R.id.liveSwitch)
+        liveSwitch.setOnCheckedChangeListener { _, checked ->
+            if (checked) hintText.text = "实时传输：扫描时边扫边发到接收端"
+        }
         infoText = findViewById(R.id.info)
         hintText = findViewById(R.id.hint)
         progressBar = findViewById(R.id.progress)
@@ -100,6 +139,9 @@ class MainActivity : AppCompatActivity() {
         recordBtn = findViewById(R.id.recordBtn)
         sendBtn = findViewById(R.id.sendBtn)
         clearBtn = findViewById(R.id.clearBtn)
+        historyList = findViewById(R.id.historyList)
+        loadHistory()
+        renderHistory()
 
         scanBtn.setOnClickListener {
             if (scanning) stopScan() else startScan()
@@ -132,8 +174,26 @@ class MainActivity : AppCompatActivity() {
         scanning = true
         done = false
         scanBtn.text = "停止扫描"
-        infoText.text = "扫描中… 对准播放端二维码"
         hintText.text = ""
+        if (liveSwitch.isChecked) {
+            val url = resolveRecvUrl()
+            if (url.isEmpty()) {
+                scanning = false
+                scanBtn.text = "开始扫描"
+                return
+            }
+            liveUpload = true
+            liveUrl = url
+            liveDone = false
+            uploadedCount = 0
+            recvTotalLive = 0
+            sendBtn.isEnabled = false
+            infoText.text = "实时传输中… 对准播放端二维码，边扫边发"
+        } else {
+            liveUpload = false
+            liveUrl = ""
+            infoText.text = "扫描中… 对准播放端二维码"
+        }
         bindCamera()
     }
 
@@ -272,8 +332,17 @@ class MainActivity : AppCompatActivity() {
     // ========== 视频离线解析 ==========
 
     private fun parseVideo(file: File) {
-        if (parsing) return
+        if (parsing || videoStreaming) return
+        val url = resolveRecvUrl()
+        if (url.isEmpty()) {
+            infoText.text = "请先打开「USB 直连」或填写电脑地址，再录像"
+            return
+        }
         parsing = true
+        videoStreaming = true
+        liveDone = false
+        uploadedCount = 0
+        recvTotalLive = 0
         parseExecutor.execute {
             val retriever = MediaMetadataRetriever()
             try {
@@ -281,39 +350,42 @@ class MainActivity : AppCompatActivity() {
                 val durationMs = retriever.extractMetadata(
                     MediaMetadataRetriever.METADATA_KEY_DURATION
                 )?.toLongOrNull() ?: 0L
-                // 步进约 66ms ≈ 15fps，平衡解析速度与帧覆盖率
+                // 步进约 66ms ≈ 15fps。抽帧用 MediaCodec（快）留在手机，QR 解码也用
+                // ML Kit（对真实拍摄的屏幕照片稳健）留在手机；解出的原始帧字节流式发接收端。
                 val stepUs = 66_666L
                 val durationUs = durationMs * 1000L
                 val totalFrames = if (durationUs > 0) (durationUs / stepUs).toInt() else 0
+                Log.i(TAG, "parseVideo start: url=$url size=${file.length()} dur=${durationMs}ms frames=$totalFrames")
 
                 var timeUs = 0L
                 var frameIndex = 0
-                while (timeUs <= durationUs) {
+                while (timeUs <= durationUs && !liveDone) {
                     val bitmap = retriever.getFrameAtTime(
                         timeUs, MediaMetadataRetriever.OPTION_CLOSEST
                     )
                     if (bitmap != null) {
-                        decodeBarcodeFromBitmap(bitmap, file.name)
+                        decodeAndStream(bitmap, url, file.name)
                         bitmap.recycle()
-                    } else {
-                        Log.w(TAG, "parseVideo: null bitmap at $timeUs us")
                     }
                     frameIndex++
                     // 定期刷新 UI（每 10 帧），避免频繁 runOnUiThread
                     if (frameIndex % 10 == 0) {
                         val pc = capturedCount
+                        val up = uploadedCount
+                        val rt = recvTotalLive
                         runOnUiThread {
-                            infoText.text = "解析中… 第 ${frameIndex}/${totalFrames} 帧，已解析 $pc 块"
+                            infoText.text = "解析传输中… 第 $frameIndex/$totalFrames 帧，已解 $pc 块，还原端已收 $up/$rt"
                         }
                     }
                     timeUs = frameIndex * stepUs
                 }
                 // 录像文件解析完后可删除以释放空间
+                Log.i(TAG, "parseVideo end: frames=$frameIndex captured=$capturedCount")
                 if (file.exists()) file.delete()
-                val pc = capturedCount
-                runOnUiThread {
-                    infoText.text = "✓ 录像解析完成，共 $pc 块（点「提交到电脑」提交）"
-                    sendBtn.isEnabled = true
+                if (!liveDone) {
+                    runOnUiThread {
+                        infoText.text = "解析结束，还原端未完成（可能漏帧，可重录或重试）"
+                    }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "parseVideo", e)
@@ -321,28 +393,36 @@ class MainActivity : AppCompatActivity() {
             } finally {
                 retriever.release()
                 parsing = false
+                videoStreaming = false
             }
         }
     }
 
-    /** 将 Bitmap 帧送入 ML Kit 解码，去重+缓存，与实时扫描共用同一路径。 */
-    private fun decodeBarcodeFromBitmap(bitmap: Bitmap, source: String) {
+    /** 抽帧 → ML Kit 解码（稳健）→ 去重缓存 + 流式发送帧字节到接收端。 */
+    private fun decodeAndStream(bitmap: Bitmap, url: String, source: String) {
         val inputImage = InputImage.fromBitmap(bitmap, 0)
         try {
             val barcodes = Tasks.await(scanner.process(inputImage))
+            if (barcodes.isNotEmpty()) {
+                Log.i(TAG, "decodeAndStream: ${bitmap.width}x${bitmap.height} barcodes=${barcodes.size}")
+            }
             for (b in barcodes) {
                 if (b.format == Barcode.FORMAT_QR_CODE) {
-                    val bytes = b.rawBytes
-                    if (bytes != null && bytes.isNotEmpty()) {
-                        if (ingestBarcodeBytes(bytes)) {
-                            // 仅记录日志，不过度刷 UI
-                            Log.d(TAG, "decodeBarcodeFromBitmap: new frame from $source")
+                    var bytes = b.rawBytes
+                    if (bytes == null || bytes.isEmpty()) {
+                        val v = b.rawValue
+                        if (v != null && v.isNotEmpty()) bytes = base64Decode(v)
+                    }
+                    Log.i(TAG, "decodeAndStream: qr rawBytes=${bytes?.size ?: -1}")
+                    if (bytes != null && bytes.isNotEmpty() && ingestBarcodeBytes(bytes)) {
+                        if (url.isNotEmpty() && !liveDone) {
+                            streamToReceiver(url, bytes) { onVideoComplete() }
                         }
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "decodeBarcodeFromBitmap", e)
+            Log.w(TAG, "decodeAndStream", e)
         }
     }
 
@@ -392,6 +472,11 @@ class MainActivity : AppCompatActivity() {
         // 去重+缓存（与录像解析共享同一路径）
         if (!ingestBarcodeBytes(bytes)) return
 
+        // 实时传输：新帧立刻发到接收端
+        if (liveUpload && liveUrl.isNotEmpty() && !liveDone) {
+            streamToReceiver(liveUrl, bytes) { onLiveScanComplete() }
+        }
+
         // 识别框归一化坐标
         val bb = barcode.boundingBox
         runOnUiThread {
@@ -401,8 +486,9 @@ class MainActivity : AppCompatActivity() {
                     bb.width().toFloat() / imgW, bb.height().toFloat() / imgH
                 )
             }
-            // 即时反馈：已捕获帧数（暂存本地，点「提交到电脑」提交）
-            if (!done && !sending) {
+            if (liveUpload) {
+                infoText.text = "实时传输中… 已扫 $capturedCount 块，还原端已收 $uploadedCount/$recvTotalLive"
+            } else if (!done && !sending) {
                 infoText.text = "✓ 已捕获 $capturedCount 块（点「提交到电脑」提交）"
                 sendBtn.isEnabled = true
             }
@@ -446,36 +532,29 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 批量提交已缓存的帧到还原端 /api/ingest，逐帧 POST。
-     * 还原端返回 count/total 进度；done=true 表示重组完成。
+     * 通用提交：把 frames 逐帧 POST 到 url（/api/ingest）。
+     * 每帧响应在 UI 线程刷新进度；结束后回调 onFinish(success, completed)。
      */
-    private fun sendBuffer() {
-        if (sending) return
-        if (buf.isEmpty()) {
-            infoText.text = "没有可提交的帧，先扫描"
-            return
-        }
-        val url = resolveRecvUrl()
-        if (url.isEmpty()) return
-        sending = true
-        sendBtn.isEnabled = false
-        scanBtn.isEnabled = false
-        recordBtn.isEnabled = false
-        val total = buf.size
-        infoText.text = "提交中… 0/$total"
+    private fun submitFrames(
+        url: String,
+        frames: List<ByteArray>,
+        onFinish: (success: Boolean, completed: Boolean) -> Unit
+    ) {
         httpExecutor.execute {
             var sentCount = 0
             var recvTotal = 0
             var lastErr: String? = null
+            var completed = false
             var stop = false
             var i = 0
-            while (i < buf.size && !stop) {
+            val total = frames.size
+            while (i < total && !stop) {
                 try {
                     val req = Request.Builder()
                         .url(url)
-                        .post(buf[i].toRequestBody("application/octet-stream".toMediaType()))
+                        .post(frames[i].toRequestBody("application/octet-stream".toMediaType()))
                         .build()
-                    val isDone = http.newCall(req).execute().use { resp ->
+                    http.newCall(req).execute().use { resp ->
                         val body = resp.body?.string() ?: ""
                         val j = if (body.isNotEmpty()) JSONObject(body) else JSONObject()
                         val count = j.optInt("count", 0)
@@ -484,25 +563,14 @@ class MainActivity : AppCompatActivity() {
                         val d = j.optBoolean("done", false)
                         val ok = j.optBoolean("ok", true)
                         val err = j.optString("error", "")
+                        if (d) completed = true
                         runOnUiThread {
-                            if (!ok && err.isNotEmpty()) {
-                                hintText.text = "还原端错误: $err"
-                                return@runOnUiThread
-                            }
-                            if (recvTotal > 0) {
-                                progressBar.progress = (sentCount * 100 / recvTotal).coerceIn(0, 100)
-                            }
+                            if (!ok && err.isNotEmpty()) hintText.text = "还原端错误: $err"
+                            if (recvTotal > 0) progressBar.progress = (sentCount * 100 / recvTotal).coerceIn(0, 100)
                             infoText.text = "提交中 ${i + 1}/$total（还原端已收 $sentCount/$recvTotal）"
-                            if (d) {
-                                done = true
-                                infoText.text = "✓ 还原完成 ($sentCount/$recvTotal)"
-                                hintText.text = "文件已落在还原端电脑的 downloads/ 目录"
-                                overlay.clearBox()
-                            }
                         }
-                        d
                     }
-                    if (isDone) stop = true
+                    if (completed) stop = true
                 } catch (e: Exception) {
                     lastErr = e.message
                     runOnUiThread {
@@ -512,21 +580,320 @@ class MainActivity : AppCompatActivity() {
                 }
                 i++
             }
-            runOnUiThread {
-                sending = false
-                scanBtn.isEnabled = true
-                recordBtn.isEnabled = true
-                if (!done) {
-                    sendBtn.isEnabled = true  // 允许重试/补发
-                    if (lastErr == null) {
-                        infoText.text = "提交完毕 ($total 块)；还原端进度 $sentCount/$recvTotal"
+            runOnUiThread { onFinish(lastErr == null, completed) }
+        }
+    }
+
+    /** 提交当前扫描缓存；成功后归档到历史并复位，可继续扫下一个文件。 */
+    private fun sendBuffer() {
+        if (sending) return
+        if (buf.isEmpty()) {
+            infoText.text = "没有可提交的帧，先扫描"
+            return
+        }
+        val url = resolveRecvUrl()
+        if (url.isEmpty()) return
+        // 提交前先停扫描，避免提交期间继续往 buf 追加新帧
+        scanning = false
+        scanBtn.text = "开始扫描"
+        try { ProcessCameraProvider.getInstance(this).get().unbindAll() } catch (e: Exception) { }
+        sending = true
+        sendBtn.isEnabled = false
+        scanBtn.isEnabled = false
+        recordBtn.isEnabled = false
+        val frames = ArrayList(buf)   // 快照，提交期间复位 buf 不受影响
+        val total = frames.size
+        infoText.text = "提交中… 0/$total"
+        submitFrames(url, frames) { success, completed ->
+            sending = false
+            scanBtn.isEnabled = true
+            recordBtn.isEnabled = true
+            if (success && completed) {
+                archiveCurrent(frames)
+            } else {
+                sendBtn.isEnabled = true  // 未完成可重试
+                if (success) infoText.text = "提交完毕 ($total 块)，还原端未报告完成，可点「提交到电脑」重试"
+            }
+        }
+    }
+
+    /** 提交成功后：归档到历史 + 复位当前会话，准备接收下一个文件。 */
+    private fun archiveCurrent(frames: List<ByteArray>) {
+        historySeq++
+        val rec = TransferRecord(
+            id = historySeq,
+            label = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date()),
+            frames = ArrayList(frames),
+            dataCount = capturedCount,
+            status = "已完成"
+        )
+        history.add(0, rec)
+        persistHistory()
+        synchronized(seen) { seen.clear() }
+        buf.clear()
+        capturedCount = 0
+        done = false
+        progressBar.progress = 0
+        sendBtn.isEnabled = false
+        scanning = false
+        scanBtn.text = "开始扫描"
+        try { ProcessCameraProvider.getInstance(this).get().unbindAll() } catch (e: Exception) { }
+        overlay.clearBox()
+        infoText.text = "✓ 还原完成，已存入记录 #${rec.id}（${rec.dataCount} 块），可继续扫下一个"
+        hintText.text = "文件已落在还原端电脑的 downloads/ 目录"
+        renderHistory()
+    }
+
+    /** 流式上传一帧/一图到接收端（有界并发，喷泉码兜底丢帧）。 */
+    private fun streamToReceiver(url: String, body: ByteArray, onDone: () -> Unit) {
+        if (liveDone) return
+        if (inflight.get() >= MAX_INFLIGHT) return
+        inflight.incrementAndGet()
+        httpExecutor.execute {
+            try {
+                val req = Request.Builder()
+                    .url(url)
+                    .post(body.toRequestBody("application/octet-stream".toMediaType()))
+                    .build()
+                http.newCall(req).execute().use { resp ->
+                    val rbody = resp.body?.string() ?: ""
+                    val j = if (rbody.isNotEmpty()) JSONObject(rbody) else JSONObject()
+                    val count = j.optInt("count", 0)
+                    val total = j.optInt("total", 0)
+                    val d = j.optBoolean("done", false)
+                    runOnUiThread {
+                        failCount = 0
+                        if (total > 0) recvTotalLive = total
+                        if (count > 0) uploadedCount = count
+                        if (recvTotalLive > 0) {
+                            progressBar.progress = (uploadedCount * 100 / recvTotalLive).coerceIn(0, 100)
+                        }
+                        if (d && !liveDone) {
+                            liveDone = true
+                            onDone()
+                        }
                     }
+                }
+            } catch (e: Exception) {
+                // 连续失败达到阈值：判定 USB/网络断开，保帧并提示改走 WiFi
+                failCount++
+                if (failCount >= FAIL_THRESHOLD && !liveDone) {
+                    runOnUiThread {
+                        if (!liveDone) {
+                            liveDone = true
+                            onStreamFailure()
+                        }
+                    }
+                }
+            } finally {
+                inflight.decrementAndGet()
+            }
+        }
+    }
+
+    /** 实时扫描流式完成：归档已解码帧 + 复位。 */
+    private fun onLiveScanComplete() {
+        archiveCurrent(ArrayList(buf))
+        resetStreamState()
+    }
+
+    /** 录像解析传输完成：归档已解码帧 + 复位（与实时扫描一致，可重发）。 */
+    private fun onVideoComplete() {
+        archiveCurrent(ArrayList(buf))
+        resetStreamState()
+    }
+
+    /** 复位流式状态（liveDone 由下次会话开始时清空，防止迟到响应重复触发）。 */
+    private fun resetStreamState() {
+        liveUpload = false
+        liveUrl = ""
+        uploadedCount = 0
+        recvTotalLive = 0
+        videoStreaming = false
+    }
+
+    /** USB 直连连通性检测：ping 接收端 localhost:8080。 */
+    private fun testUsbConnection() {
+        infoText.text = "检测 USB 直连…"
+        httpExecutor.execute {
+            try {
+                val req = Request.Builder().url("http://localhost:8080/api/ping").get().build()
+                http.newCall(req).execute().use { resp ->
+                    val ok = resp.isSuccessful
+                    runOnUiThread {
+                        if (ok) {
+                            infoText.text = "✓ USB 直连正常，点「开始扫描」对准播放端二维码"
+                            hintText.text = "USB 直连：数据走 USB 线到接收端电脑"
+                        } else {
+                            infoText.text = "✗ USB 直连失败（HTTP ${resp.code}），请检查接收端或改填地址走 WiFi"
+                            hintText.text = "USB 不通时：关掉 USB 开关，填电脑地址走 WiFi"
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    infoText.text = "✗ USB 直连不通——请确认：接收端已开、手机开 USB 调试、线是数据线；或改走 WiFi"
+                    hintText.text = "USB 不通时：关掉 USB 开关，填电脑地址走 WiFi"
                 }
             }
         }
     }
 
+    /** 流式传输失败：停止流式，保留本地帧，允许切 WiFi 批量重发。 */
+    private fun onStreamFailure() {
+        if (videoStreaming) {
+            videoStreaming = false
+            sendBtn.isEnabled = true
+            infoText.text = "传输失败（已缓存 $capturedCount 块）——可切 WiFi 后点「提交到电脑」重发"
+            hintText.text = "或从历史记录重新提交"
+        } else {
+            scanning = false
+            scanBtn.text = "开始扫描"
+            try { ProcessCameraProvider.getInstance(this).get().unbindAll() } catch (e: Exception) { }
+            overlay.clearBox()
+            liveUpload = false
+            sendBtn.isEnabled = true
+            infoText.text = "传输失败（已缓存 $capturedCount 块）——关掉 USB、填电脑地址后点「提交到电脑」重发"
+            hintText.text = "或直接点「提交到电脑」用当前地址重试"
+        }
+    }
+
+    /** 从历史重新提交某条记录。 */
+    private fun resubmit(rec: TransferRecord) {
+        val url = resolveRecvUrl()
+        if (url.isEmpty()) return
+        rec.status = "提交中"
+        renderHistory()
+        infoText.text = "重新提交记录 #${rec.id} …"
+        submitFrames(url, rec.frames) { success, completed ->
+            rec.status = if (success && completed) "已完成" else "待提交"
+            persistHistory()
+            renderHistory()
+            infoText.text = if (completed) "✓ 记录 #${rec.id} 重新提交完成"
+                else "记录 #${rec.id} 重新提交未完成，可再次重试"
+        }
+    }
+
+    /** 重建历史列表 UI。 */
+    private fun renderHistory() {
+        historyList.removeAllViews()
+        if (history.isEmpty()) {
+            val t = TextView(this)
+            t.text = "暂无记录"
+            t.setTextColor(0xff888888.toInt())
+            t.textSize = 12f
+            historyList.addView(t)
+            return
+        }
+        for (rec in history) {
+            val row = LinearLayout(this)
+            row.orientation = LinearLayout.HORIZONTAL
+            row.gravity = android.view.Gravity.CENTER_VERTICAL
+            row.setPadding(0, 4, 0, 4)
+            val info = TextView(this)
+            info.text = "#${rec.id} ${rec.label} · ${rec.dataCount} 块 · ${rec.status}"
+            info.setTextColor(0xffcccccc.toInt())
+            info.textSize = 12f
+            info.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            val btn = Button(this)
+            btn.text = "重新提交"
+            btn.textSize = 12f
+            btn.setOnClickListener { resubmit(rec) }
+            row.addView(info)
+            row.addView(btn)
+            historyList.addView(row)
+        }
+    }
+
+    /** 帧文件格式：每帧 4 字节大端长度 + 帧字节，逐帧拼接。 */
+    private fun writeFrames(file: File, frames: List<ByteArray>) {
+        file.outputStream().use { out ->
+            val lb = ByteArray(4)
+            for (f in frames) {
+                val n = f.size
+                lb[0] = (n ushr 24).toByte()
+                lb[1] = (n ushr 16).toByte()
+                lb[2] = (n ushr 8).toByte()
+                lb[3] = n.toByte()
+                out.write(lb)
+                out.write(f)
+            }
+        }
+    }
+
+    private fun readFrames(file: File): List<ByteArray> {
+        if (!file.exists()) return emptyList()
+        val b = file.readBytes()
+        val list = ArrayList<ByteArray>()
+        var i = 0
+        while (i + 4 <= b.size) {
+            val n = ((b[i].toInt() and 0xff) shl 24) or
+                ((b[i + 1].toInt() and 0xff) shl 16) or
+                ((b[i + 2].toInt() and 0xff) shl 8) or
+                (b[i + 3].toInt() and 0xff)
+            i += 4
+            if (n <= 0 || i + n > b.size) break
+            list.add(b.copyOfRange(i, i + n))
+            i += n
+        }
+        return list
+    }
+
+    /** 把全部历史写盘（帧文件 + index.json），App 重启后不丢。 */
+    private fun persistHistory() {
+        try {
+            val dir = File(filesDir, "history")
+            dir.mkdirs()
+            val arr = org.json.JSONArray()
+            for (rec in history) {
+                writeFrames(File(dir, "f_${rec.id}.bin"), rec.frames)
+                val o = org.json.JSONObject()
+                o.put("id", rec.id)
+                o.put("label", rec.label)
+                o.put("dataCount", rec.dataCount)
+                o.put("status", rec.status)
+                arr.put(o)
+            }
+            File(dir, "index.json").writeText(arr.toString())
+        } catch (e: Exception) {
+            Log.w(TAG, "persistHistory failed", e)
+        }
+    }
+
+    /** 启动时从盘上恢复历史。 */
+    private fun loadHistory() {
+        history.clear()
+        try {
+            val dir = File(filesDir, "history")
+            val idx = File(dir, "index.json")
+            if (!idx.exists()) return
+            val arr = org.json.JSONArray(idx.readText())
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val id = o.optLong("id")
+                val frames = readFrames(File(dir, "f_${id}.bin"))
+                if (frames.isEmpty()) continue
+                history.add(
+                    TransferRecord(
+                        id = id,
+                        label = o.optString("label"),
+                        frames = frames,
+                        dataCount = o.optInt("dataCount"),
+                        status = o.optString("status", "已完成")
+                    )
+                )
+            }
+            historySeq = history.maxOfOrNull { it.id } ?: 0L
+        } catch (e: Exception) {
+            Log.w(TAG, "loadHistory failed", e)
+        }
+    }
+
     private fun resolveRecvUrl(): String {
+        if (usbSwitch.isChecked) {
+            // USB 直连：经 adb reverse 隧道走 USB 线，POST 到本机映射的 8080
+            return "http://localhost:8080/api/ingest"
+        }
         var s = recvUrlEdit.text.toString().trim()
         if (s.isEmpty()) {
             infoText.text = "请先填写电脑地址（本机IP:端口，如 192.168.253.1:8080）"
@@ -569,5 +936,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "qrcd.relay"
+        private const val MAX_INFLIGHT = 32
+        private const val FAIL_THRESHOLD = 3
     }
 }

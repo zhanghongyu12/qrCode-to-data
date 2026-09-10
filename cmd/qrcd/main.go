@@ -93,6 +93,11 @@ func runDesktop(ctx context.Context, addr string) error {
 	}()
 	time.Sleep(600 * time.Millisecond) // 等服务起来
 
+	// 还原端/完整版：后台维护手机 USB 直连隧道（免 WiFi/免填 IP）
+	if role == "b" || role == "" {
+		go setupUSBReverse(ctx)
+	}
+
 	// 按构建期角色决定打开哪个页面：a=播放端 / b=还原端 / 空=完整三端
 	var page, winTitle, letter string
 	switch role {

@@ -463,6 +463,7 @@ button{font-size:16px;padding:12px 24px;border:none;border-radius:8px;background
 <body>
 <h1>qrcd 还原端</h1>
 <div class="hint">本机已就绪，等待手机中继提交帧。<br>在手机上打开 <b>本机IP:8080/relay</b> 扫播放端二维码即可。</div>
+<div id="usb" class="hint" style="color:#999">检测 USB 直连…</div>
 <div class="bar"><i id="prog"></i></div>
 <div id="info">等待数据…</div>
 <button id="save" hidden>保存文件</button>
@@ -480,8 +481,20 @@ async function poll(){
       $('save').hidden=false;$('save').onclick=()=>location.href='/api/recv/file';
     }else{
       $('info').textContent='已收 '+(j.count||0)+'/'+(j.total||'?')+' 块';
+      $('save').hidden=true;
     }
   }catch(e){$('info').textContent='查询失败: '+e.message}
 }
-$('reset').onclick=()=>{fetch('/api/recv/status').then(()=>{$('prog').style.width=0;$('info').textContent='等待数据…';$('save').hidden=true})};
+$('reset').onclick=()=>{fetch('/api/recv/reset',{method:'POST'}).then(()=>{$('prog').style.width=0;$('info').textContent='等待数据…（已清空，可重新接收）';$('save').hidden=true})};
+async function pollUsb(){
+  try{
+    const r=await fetch('/api/usb/status');const j=await r.json();
+    const u=$('usb');
+    if(!j.available){u.textContent='USB 直连：adb 不可用';u.style.color='#999';return}
+    if(j.device&&j.reverse){u.textContent='USB 直连：✓ 已连接（'+j.serial+'），App 选「USB 直连」即可';u.style.color='#5d9'}
+    else if(j.device){u.textContent='USB 直连：手机已连接，隧道建立中…';u.style.color='#e9c'}
+    else{u.textContent='USB 直连：未检测到手机（插线后自动连接）';u.style.color='#999'}
+  }catch(e){const u=$('usb');u.textContent='USB 直连：检测失败';u.style.color='#999'}
+}
+pollUsb();setInterval(pollUsb,2000);
 </script></body></html>`

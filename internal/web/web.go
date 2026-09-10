@@ -1,9 +1,12 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/jpeg"
 	"image/png"
 	"io"
 	"net"
@@ -35,6 +38,34 @@ type recvSession struct {
 	res   *receive.Result
 	count int
 	total int
+}
+
+// USBStatus 手机 USB 直连状态（由 cmd/qrcd 的 setupUSBReverse 周期更新）。
+type USBStatus struct {
+	Available bool   `json:"available"` // adb 可执行文件是否存在
+	Device    bool   `json:"device"`    // 是否有 online 设备
+	Reverse   bool   `json:"reverse"`   // reverse 隧道是否建立
+	Serial    string `json:"serial"`    // 设备序列号
+	Detail    string `json:"detail"`    // 描述
+}
+
+var (
+	usbMu     sync.Mutex
+	usbStatus USBStatus
+)
+
+// SetUSBStatus 更新 USB 直连状态（供 cmd/qrcd 调用）。
+func SetUSBStatus(st USBStatus) {
+	usbMu.Lock()
+	usbStatus = st
+	usbMu.Unlock()
+}
+
+// GetUSBStatus 读取 USB 直连状态。
+func GetUSBStatus() USBStatus {
+	usbMu.Lock()
+	defer usbMu.Unlock()
+	return usbStatus
 }
 
 // Server 提供 send/receive 三端 Web 产物。
@@ -79,8 +110,12 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/frame/", s.handleFrame)
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/ingest", s.handleIngest)
+	mux.HandleFunc("/api/ingest/image", s.handleIngestImage)
+	mux.HandleFunc("/api/ping", s.handlePing)
+	mux.HandleFunc("/api/usb/status", s.handleUSBStatus)
 	mux.HandleFunc("/api/recv/status", s.handleRecvStatus)
 	mux.HandleFunc("/api/recv/file", s.handleRecvFile)
+	mux.HandleFunc("/api/recv/reset", s.handleRecvReset)
 	mux.HandleFunc("/jsQR.js", s.handleJSQR)
 	mux.HandleFunc("/dl/app.apk", s.handleAPKDownload)
 	mux.HandleFunc("/api/qrcode", s.handleQRCode)
@@ -367,6 +402,81 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"ok": true, "count": count, "total": total, "done": rs.done})
 }
 
+// handleIngestImage 接收手机录像模式抽帧上传的原始帧图片（JPEG/PNG），
+// 在接收端用 gozxing 解码二维码得到 QRCD 帧字节，再喂给 receive.Processor 重组。
+func (s *Server) handleIngestImage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	if r.Method == http.MethodOptions {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", 405)
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil || len(body) == 0 {
+		http.Error(w, "空帧", 400)
+		return
+	}
+	img, _, err := image.Decode(bytes.NewReader(body))
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "图片解码失败: " + err.Error()})
+		return
+	}
+	frameBytes, err := qrcode.DecodeImageBytesLenient(img)
+	if err != nil {
+		// 这张图里没有二维码或解码失败：不算致命，跳过（喷泉码兜底）
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "count": 0, "total": 0, "done": false, "skip": true})
+		return
+	}
+
+	s.rmu.Lock()
+	rs := s.recv
+	if rs == nil || rs.done {
+		os.MkdirAll("downloads", 0o755)
+		proc, _ := receive.NewProcessor(receive.Options{Output: "downloads/", Overwrite: true})
+		rs = &recvSession{proc: proc}
+		s.recv = rs
+	}
+	s.rmu.Unlock()
+
+	err = rs.proc.Process(frameBytes)
+	count, total, _ := rs.proc.Stats()
+	rs.count = count
+	rs.total = total
+	if rs.proc.Done() {
+		if res, _ := rs.proc.Result(); res != nil {
+			rs.res = res
+			rs.done = true
+		}
+	}
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error(), "count": count, "total": total, "done": rs.done})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ok": true, "count": count, "total": total, "done": rs.done})
+}
+
+// handlePing 连通性测试：手机 USB 直连时 ping localhost:8080，确认隧道可用。
+func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ok": true, "usb": GetUSBStatus()})
+}
+
+// handleUSBStatus 手机 USB 直连状态。
+func (s *Server) handleUSBStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(GetUSBStatus())
+}
+
 // handleRecvStatus 网络还原进度。
 func (s *Server) handleRecvStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -403,4 +513,18 @@ func (s *Server) handleRecvFile(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Disposition", "attachment; filename=\""+rs.res.Name+"\"")
 	http.ServeFile(w, r, rs.res.OutputPath)
+}
+
+// handleRecvReset 清空还原会话，回到"等待接收"的初始空状态（相当于重新接收）。
+// 场景：上一轮接收中断（未完成）或已完成，用户想从干净状态接收下一个文件。
+func (s *Server) handleRecvReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", 405)
+		return
+	}
+	s.rmu.Lock()
+	s.recv = nil
+	s.rmu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ok": true, "ready": false})
 }

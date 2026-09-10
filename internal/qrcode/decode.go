@@ -63,6 +63,28 @@ func DecodeImageBytes(img image.Image) ([]byte, error) {
 	return out, nil
 }
 
+// DecodeImageBytesLenient 先按纯二维码解码（PURE_BARCODE，最稳），
+// 失败再回退到不带 PURE_BARCODE 的全图扫描，适用于含背景的屏幕截图/录像帧。
+func DecodeImageBytesLenient(img image.Image) ([]byte, error) {
+	if b, err := DecodeImageBytes(img); err == nil {
+		return b, nil
+	}
+	hints := map[gozxing.DecodeHintType]interface{}{
+		gozxing.DecodeHintType_CHARACTER_SET: charmap.ISO8859_1,
+		gozxing.DecodeHintType_TRY_HARDER:    struct{}{},
+	}
+	res, err := decode(img, hints)
+	if err != nil {
+		return nil, err
+	}
+	enc := charmap.ISO8859_1.NewEncoder()
+	out, _, err := transform.Bytes(enc, []byte(res.GetText()))
+	if err != nil {
+		return nil, fmt.Errorf("qrcode: 字节还原失败: %w", err)
+	}
+	return out, nil
+}
+
 // DecodePNG 从 PNG 字节解码二维码内容（文本）。
 func DecodePNG(data []byte) (string, error) {
 	img, err := png.Decode(bytes.NewReader(data))
